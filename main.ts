@@ -13,7 +13,7 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
@@ -51,17 +51,13 @@ if (issue !== null) {
 }
 
 mkdirSync(out, { recursive: true, mode: 0o755 });
-chmodSync(out, 0o755);
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`, { mode: 0o644 });
 writeFileSync(join(out, 'data.js'), dataScript(radar), { mode: 0o644 });
-chmodSync(join(out, 'board.json'), 0o644);
-chmodSync(join(out, 'data.js'), 0o644);
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
 function copyFiles(from: string, to: string): string[] {
   if (!existsSync(from)) return [];
   mkdirSync(to, { recursive: true, mode: 0o755 });
-  chmodSync(to, 0o755);
   const copied: string[] = [];
   for (const name of readdirSync(from)) {
     if (name.startsWith('.')) continue;
@@ -69,7 +65,6 @@ function copyFiles(from: string, to: string): string[] {
     if (!statSync(path).isFile()) continue;
     const dest = join(to, name);
     copyFileSync(path, dest);
-    chmodSync(dest, 0o644);
     copied.push(name);
   }
   return copied;
@@ -91,7 +86,6 @@ for (const name of shots) {
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }), { mode: 0o644 });
-chmodSync(join(out, 'dossier.json'), 0o644);
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
