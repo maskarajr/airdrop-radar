@@ -1,0 +1,8 @@
+{
+  "harness": "cursor-cloud-agent",
+  "harness_version": "unknown",
+  "provider": "xai",
+  "model": "grok-4.7",
+  "effort": "default",
+  "mcp_servers": []
+}
