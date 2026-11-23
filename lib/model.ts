@@ -12,7 +12,7 @@ import type { Snapshot, SnapshotProtocol } from './types.ts';
 export type { Snapshot, SnapshotProtocol } from './types.ts';
 export { parseSnapshot, SnapshotError } from './types.ts';
 
-export const MODEL_VERSION = 'comparables-1';
+export const MODEL_VERSION = 'comparables-2';
 
 export const MIN_CATEGORY_SAMPLE = 5;
 export const GROWTH_FLOOR = -30;
@@ -66,9 +66,9 @@ export const GAS_DEFAULT_CENTS = 80;
 
 export const METHOD = {
   thesis:
-    'Implied value is TVL times a category mcap/TVL multiple taken from protocols whose token already trades, then scaled by 7-day growth, time listed with no token, chain breadth and size.',
+    'Implied value is TVL times a mcap/TVL multiple from protocols whose token already trades, then scaled by 7-day growth, time listed with no token, chain breadth, size and how often that category already records a token.',
   formula:
-    'implied_value_usd = round(tvl_usd × categoryMultiple × growthFactor × maturityFactor × breadthFactor × sizeFactor), and at least 1.',
+    'implied_value_usd = round(tvl_usd × categoryMultiple × growthFactor × maturityFactor × breadthFactor × sizeFactor × tokenFactor), and at least 1.',
   growth:
     'growthFactor = 1 + clamp(change_7d, -30, 60) / 100 × 0.5. A missing 7-day change is neutral (1).',
   maturity:
@@ -77,7 +77,9 @@ export const METHOD = {
   size:
     'sizeFactor moves from 0.97 at about $5M TVL (log10 6.7) to 1.08 at $10B (log10 10). TVL already scales the result; this term is only a small size tilt.',
   multiples:
-    'categoryMultiple is the median of mcap_usd / tvl_usd for protocols in the category with a positive market cap, after clipping that category to its own 5th–95th percentile. Fewer than 5 such tokens, and the row uses the global median of all positive ratios clipped to the global 5th–95th percentile. Low and high use that set’s 25th and 75th percentiles in place of the median.',
+    'categoryMultiple is the median of mcap_usd / tvl_usd for protocols in the category with a positive market cap, after clipping that category to its own 5th–95th percentile. Fewer than 5 such tokens, and the row uses the same median for its playbook family (lending, dex, perps, yield, and the rest). Fewer than 5 in the family as well, and the row uses the global median of all positive ratios clipped to the global 5th–95th percentile. The row records the source as category, family or global. Low and high use that set’s 25th and 75th percentiles.',
+  token:
+    'tokenFactor = 0.72 + 0.40 × share, where share is the fraction of protocols in the category that record a token (gecko_id or symbol is set). A category where tokens are rare, such as risk curators, gets a factor under 1 and ranks lower than the same TVL in a category that often launches a token. 0% → 0.72 and 100% → 1.12.',
   separation:
     'A protocol records no token when gecko_id and symbol are both null. Only those rows are ranked. A protocol with a positive mcap_usd is listed as a comparable: its token already trades, and it is not ranked.',
   exclusions:
@@ -116,16 +118,22 @@ export type Playbook =
   | 'insurance'
   | 'other';
 
-export type MultipleSource = 'category' | 'global';
+export type MultipleSource = 'category' | 'family' | 'global';
 
 export interface MultipleStats {
   category: string;
+  family: Playbook;
   sample: number;
+  family_sample: number;
   used: number;
   source: MultipleSource;
   multiple: number;
   p25: number;
   p75: number;
+  token_with: number;
+  token_total: number;
+  token_share: number;
+  token_factor: number;
 }
 
 export interface GlobalMultiple {
@@ -160,6 +168,11 @@ export interface BoardRow {
   multiple_p75: number;
   multiple_source: MultipleSource;
   comparable_count: number;
+  family_sample: number;
+  token_share: number;
+  token_with: number;
+  token_in_category: number;
+  token_factor: number;
   growth_factor: number;
   maturity_factor: number;
   breadth_factor: number;
@@ -309,6 +322,12 @@ export function sizeFactor(tvl: number): number {
   return round6(SIZE_FACTOR_LO + t * SIZE_FACTOR_SPAN);
 }
 
+/** 0.72 when no protocol in the category records a token, 1.12 when every one does. */
+export function tokenFactor(share: number): number {
+  const s = Math.min(1, Math.max(0, share));
+  return round6(0.72 + s * 0.4);
+}
+
 export function impliedValue(
   tvl: number,
   multiple: number,
@@ -316,8 +335,9 @@ export function impliedValue(
   maturity: number,
   breadth: number,
   size: number,
+  token: number,
 ): number {
-  const n = Math.round(tvl * multiple * growth * maturity * breadth * size);
+  const n = Math.round(tvl * multiple * growth * maturity * breadth * size * token);
   if (!Number.isFinite(n) || n < 1) return 1;
   if (n > 1e14) return 1e14;
   return n;
@@ -374,8 +394,8 @@ function dollars(n: number): string {
 
 function gasPhrase(usd: number, chain: string): string {
   if (usd < 0.1) return `under $0.10 of gas on ${chain}`;
-  if (usd >= 1) return `about ${dollars(usd)} of gas on ${chain}`;
-  return `about $${usd.toFixed(2)} of gas on ${chain}`;
+  const body = usd >= 10 || Number.isInteger(usd) ? dollars(usd) : `$${usd.toFixed(2)}`;
+  return `about ${body} of gas on ${chain}`;
 }
 
 function formatCompact(n: number): string {
@@ -451,6 +471,25 @@ function gasTxCount(play: Playbook): number {
   }
 }
 
+function setupMinutes(tvl: number, hold: number): number {
+  let minutes = 12 + Math.round(hold / 10);
+  if (tvl >= 1_000_000_000) minutes += 18;
+  else if (tvl >= 250_000_000) minutes += 12;
+  else if (tvl >= 50_000_000) minutes += 6;
+  else if (tvl >= 10_000_000) minutes += 3;
+  return Math.min(55, minutes);
+}
+
+function weeksOf(hold: number): number {
+  return Math.max(1, Math.round(hold / 7));
+}
+
+function reviewMinutes(hold: number, tvl: number): number {
+  let minutes = 6 + Math.round(hold / 15);
+  if (tvl >= 250_000_000) minutes += 4;
+  return Math.min(25, minutes);
+}
+
 interface FarmContext {
   name: string;
   category: string;
@@ -459,172 +498,205 @@ interface FarmContext {
   tvl: number;
   capital: number;
   hold: number;
+  weeks: number;
+  setupMin: number;
+  reviewMin: number;
   age: number | null;
   gasUsd: number;
   gasText: string;
+  reviewGasText: string;
+  verb: string;
+}
+
+function actionVerb(play: Playbook): string {
+  switch (play) {
+    case 'lending':
+      return 'supply';
+    case 'dex':
+      return 'LP';
+    case 'perps':
+    case 'basis':
+    case 'prediction':
+      return 'trade';
+    case 'yield':
+    case 'launchpad':
+    case 'other':
+      return 'deposit';
+    case 'rwa':
+      return 'mint';
+    case 'staking':
+      return 'stake';
+    case 'bridge':
+      return 'bridge';
+    case 'insurance':
+      return 'buy';
+    default:
+      return assertNever(play);
+  }
 }
 
 function actionSteps(play: Playbook, ctx: FarmContext): string[] {
-  const { name, chain, capital, gasText } = ctx;
+  const { name, chain, capital, gasText, setupMin, tvl } = ctx;
   const note = chainNote(ctx.chains);
-  const tvlBit = `TVL on record is ${formatCompact(ctx.tvl)}, so the probe capital is ${dollars(capital)}.`;
+  const sized = `TVL on record is ${formatCompact(tvl)}, so this ${ctx.verb} uses ${dollars(capital)} and about ${setupMin} minutes on ${chain}.`;
+  const followMin = Math.max(8, Math.round(setupMin * 0.6));
   switch (play) {
     case 'lending': {
       const borrow = Math.max(10, Math.round(capital * 0.15));
       return [
         step(
-          `On ${chain}, supply ${dollars(capital)} of a liquid stablecoin to ${name}.${note} ${tvlBit}`,
+          `Supply ${dollars(capital)} of a liquid stablecoin to ${name} on ${chain}.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '20 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Borrow about ${dollars(borrow)} (near 15% of the supply) and keep the health factor above 2.0. If it prints under 1.8, repay before any other action.`,
+          `Borrow about ${dollars(borrow)} against that ${name} supply on ${chain} and keep the health factor above 2.0. Repay first if it prints under 1.8.`,
           gasText,
-          '10 minutes',
+          `${followMin} minutes`,
         ),
       ];
     }
     case 'dex':
       return [
         step(
-          `On ${chain}, add ${dollars(capital)} to ${name}'s deepest stablecoin pair. If the pool is concentrated, set a range about 10% either side of the current price.${note} ${tvlBit}`,
+          `LP ${dollars(capital)} in ${name}'s deepest stablecoin pair on ${chain}. If the pool is concentrated, set the range about 10% either side of the price.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '25 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `If the price leaves that range, rebalance once. If it does not, leave the liquidity where it is and do not add a second pool in this probe.`,
+          `Rebalance that ${name} LP on ${chain} once if the price leaves the range. If it stays inside, leave the position and do not open a second pool.`,
           `${gasText} if you rebalance, otherwise $0`,
-          '15 minutes if you rebalance',
+          `${followMin} minutes if you rebalance`,
         ),
       ];
     case 'perps':
       return [
         step(
-          `On ${chain}, deposit ${dollars(capital)} of stablecoin margin on ${name}.${note} ${tvlBit}`,
+          `Deposit ${dollars(capital)} of stablecoin margin on ${name}, ${chain}, before any trade.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '15 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Open one hedged position with notional near ${dollars(Math.round(capital / 2))}, about half the margin, so a 10% move cannot wipe the account. Close it if margin health drops under 50%.`,
+          `Trade one hedge on ${name} (${chain}) with notional near ${dollars(Math.round(capital / 2))}. Close it if margin health drops under 50%.`,
           gasText,
-          '15 minutes',
+          `${followMin} minutes`,
         ),
       ];
     case 'basis':
       return [
         step(
-          `On ${chain}, put ${dollars(capital)} into the ${name} basis position the app marks as delta-neutral. Do not add a borrow loop on top.${note} ${tvlBit}`,
+          `Trade the ${name} basis the app marks delta-neutral, size ${dollars(capital)}, on ${chain}. Do not add a borrow loop.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '20 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Read the funding or basis figure once at open. If the app does not open the hedge itself, stop and do not place one by hand for this probe.`,
+          `Read the ${name} funding figure on ${chain} once at the open. If the app does not place the hedge, do not trade one by hand.`,
           '$0 to read the figure',
-          '10 minutes',
+          `${followMin} minutes`,
         ),
       ];
     case 'yield':
       return [
         step(
-          `On ${chain}, deposit ${dollars(capital)} into the main ${name} vault and keep the share token in this same wallet.${note} ${tvlBit}`,
+          `Deposit ${dollars(capital)} into the main ${name} vault on ${chain} and keep the share token in this wallet.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '15 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Do not restake or deposit those shares into a second protocol during this probe. One vault, one wallet.`,
+          `Leave that ${name} deposit on ${chain} as one vault. Do not deposit the shares into a second protocol during the ${ctx.hold}-day hold.`,
           '$0',
-          '5 minutes to confirm the share balance',
+          `${Math.max(5, Math.round(followMin / 2))} minutes to confirm the share balance`,
         ),
       ];
     case 'rwa':
       return [
         step(
-          `If ${name} asks for an identity check, finish it with the issuer before sending funds. ${tvlBit}`,
+          `If ${name} asks for an identity check, finish it with the issuer before you mint. ${sized}`,
           '$0 on-chain for the check',
-          '1 to 3 days if the issuer asks, otherwise 15 minutes',
+          ctx.hold >= 30 ? '1 to 3 days if the issuer asks, otherwise 15 minutes' : '15 minutes if no check is waiting',
         ),
         step(
-          `On ${chain}, mint or buy ${dollars(capital)} of the ${name} claim and leave it in this wallet.${note}`,
+          `Mint ${dollars(capital)} of the ${name} claim on ${chain} and leave it in this wallet.${note}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '20 minutes after the check',
+          `${setupMin} minutes after the check`,
         ),
       ];
     case 'staking':
       return [
         step(
-          `On ${chain}, stake ${dollars(capital)} of the asset ${name} accepts and keep the receipt token in this wallet. Do not lend the receipt out.${note} ${tvlBit}`,
+          `Stake ${dollars(capital)} through ${name} on ${chain} and keep the receipt in this wallet. Do not lend the receipt out.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '15 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Confirm the receipt balance matches the stake, minus only the gas just paid. If it does not, stop and unwind.`,
+          `Match the ${name} receipt on ${chain} to the stake, minus the gas just paid. If it does not match, unwind.`,
           '$0 to read the balance',
-          '5 minutes',
+          `${Math.max(5, Math.round(followMin / 2))} minutes`,
         ),
       ];
     case 'bridge':
       return [
         step(
-          `Send ${dollars(capital)} of stablecoin through ${name} to ${chain}, using only the bridge page the protocol publishes, then bridge that same amount back once. That round trip is two transactions. ${tvlBit}`,
+          `Bridge ${dollars(capital)} of stablecoin through ${name} to ${chain}, then bridge the same amount back. Use only the page ${name} publishes. ${sized}`,
           `${dollars(capital)} of capital and ${gasPhrase(ctx.gasUsd * 2, chain)} for the two bridge transactions`,
-          '30 minutes',
+          `${setupMin + 10} minutes`,
         ),
         step(
-          `On ${chain}, use the bridged funds in one action the app itself offers, such as a swap or a deposit, and stop there.`,
+          `On ${chain}, use the bridged ${name} balance in one swap or deposit the app itself offers, then stop.`,
           gasText,
-          '15 minutes',
+          `${followMin} minutes`,
         ),
       ];
     case 'prediction':
       return [
         step(
-          `Fund ${name} with ${dollars(capital)} on ${chain}.${note} ${tvlBit}`,
+          `Deposit ${dollars(capital)} on ${name}, ${chain}, before placing a trade.${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '15 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Take one position in the most liquid open market, staking at most ${dollars(Math.max(10, Math.round(capital * 0.2)))} (20% of the probe). Do not add a second market.`,
+          `Trade one position in the most liquid ${name} market on ${chain}, at most ${dollars(Math.max(10, Math.round(capital * 0.2)))}. Do not open a second market.`,
           gasText,
-          '15 minutes',
+          `${followMin} minutes`,
         ),
       ];
     case 'launchpad':
       return [
         step(
-          `On ${chain}, open ${name}'s sale page and commit at most ${dollars(capital)} only if a sale is live in the app. Do not send funds to an address posted in a reply. ${tvlBit}`,
+          `Deposit at most ${dollars(capital)} on ${name}'s live sale on ${chain}. If no sale is open in the app, send nothing. ${sized}`,
           `${dollars(capital)} of capital and ${gasText} if a sale is live, otherwise $0`,
-          '20 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `If nothing is live, do not pre-send funds. Recheck the same official page, not a forwarded link.`,
+          `Recheck the ${name} sale page on ${chain} over this ${ctx.hold}-day window. Do not fund an address from a reply.`,
           '$0',
-          '10 minutes',
+          `${followMin} minutes`,
         ),
       ];
     case 'insurance':
       return [
         step(
-          `Buy ${dollars(capital)} of cover from ${name} on ${chain}, only for an asset this wallet already holds.${note} ${tvlBit}`,
+          `Buy ${dollars(capital)} of cover from ${name} on ${chain}, only for an asset this wallet already holds.${note} ${sized}`,
           `${dollars(capital)} of premium capital and ${gasText}`,
-          '20 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Save the policy id and confirm the cover runs at least ${ctx.hold} days. Do not renew through anyone but ${name}.`,
+          `Save the ${name} policy id on ${chain} and confirm the cover lasts at least ${ctx.hold} days.`,
           '$0 to read the policy',
-          '10 minutes',
+          `${followMin} minutes`,
         ),
       ];
     case 'other':
       return [
         step(
-          `On ${chain}, deposit ${dollars(capital)} into the primary ${name} contract the app presents first (${ctx.category}).${note} ${tvlBit}`,
+          `Deposit ${dollars(capital)} into the primary ${name} contract on ${chain} (${ctx.category}).${note} ${sized}`,
           `${dollars(capital)} of capital and ${gasText}`,
-          '20 minutes',
+          `${setupMin} minutes`,
         ),
         step(
-          `Make one further action the app treats as use, such as taking a receipt, a small swap or a vote, and then stop.`,
+          `Take the receipt, a small swap, or a vote on ${name} (${chain}), one action only, then stop.`,
           gasText,
-          '10 minutes',
+          `${followMin} minutes`,
         ),
       ];
     default:
@@ -661,10 +733,16 @@ export function farmPlan(p: SnapshotProtocol, age: number | null): FarmPlan {
   }
   const gasUsd = cents / 100;
   const txs = gasTxCount(play);
-  const gasTotal = round2((cents * txs) / 100);
   const capital = capitalUsd(p.tvl_usd);
   const hold = holdDays(age);
+  const weeks = weeksOf(hold);
+  const setupMin = setupMinutes(p.tvl_usd, hold);
+  const reviewMin = reviewMinutes(hold, p.tvl_usd);
+  const reviewGas = round2(gasUsd * weeks);
+  const gasTotal = round2(gasUsd * txs + reviewGas);
   const gasText = gasPhrase(gasUsd, chain);
+  const reviewGasText = reviewGas < 0.1 ? `under $0.10 of gas on ${chain}` : gasPhrase(reviewGas, chain);
+  const verb = actionVerb(play);
   const ctx: FarmContext = {
     name: p.name,
     category: p.category ?? 'Uncategorized',
@@ -673,39 +751,44 @@ export function farmPlan(p: SnapshotProtocol, age: number | null): FarmPlan {
     tvl: p.tvl_usd,
     capital,
     hold,
+    weeks,
+    setupMin,
+    reviewMin,
     age,
     gasUsd,
     gasText,
+    reviewGasText,
+    verb,
   };
   const weekly =
     play === 'lending'
       ? step(
-          `Once a week, read the health factor on ${p.name}. Repay or add supply if it is under 2.0.`,
-          `${gasText} if you send a transaction, otherwise $0`,
-          '10 minutes a week',
+          `Each week for ${weeks} weeks, read the health factor of the ${p.name} supply on ${chain}. Repay or add to the supply if it is under 2.0.`,
+          `${reviewGasText} across those checks if you send a transaction, otherwise $0`,
+          `${reviewMin} minutes a week for ${weeks} weeks`,
         )
       : step(
-          `Once a week, confirm the ${p.name} position is still open and the receipt balance moved only by fees the app itself shows.`,
-          `${gasText} if you send a transaction, otherwise $0`,
-          '10 minutes a week',
+          `Each week for ${weeks} weeks, confirm the ${verb} on ${p.name} (${chain}) is still open and the balance moved only by fees the app shows.`,
+          `${reviewGasText} across those checks if you send a transaction, otherwise $0`,
+          `${reviewMin} minutes a week for ${weeks} weeks`,
         );
   const steps = [
     step(
-      `Start with a fresh wallet that holds only this ${p.name} probe. Open the app from the protocol's own site, ignore links in replies and ads, and never pay anyone to claim a token.`,
+      `Use a fresh wallet for the ${p.name} ${verb} on ${chain}. Open the app from the protocol's own site, ignore links in replies, and never pay anyone to claim.`,
       '$0',
-      '10 minutes',
+      `${Math.max(5, Math.round(setupMin / 3))} minutes`,
     ),
     ...actionSteps(play, ctx),
     step(
-      `${ageClause(age, hold)} Leave the ${p.name} position in place for that whole window.`,
+      `${ageClause(age, hold)} Leave the ${dollars(capital)} ${verb} on ${p.name} (${chain}) in place for that whole window.`,
       `the ${dollars(capital)} stays in the position`,
       `${hold} days`,
     ),
     weekly,
     step(
-      `Write the wallet, the open date, the size and every transaction hash in a log. Withdraw only from a page ${p.name} itself links, and pay nothing to claim.`,
+      `Log the wallet, the open date, the ${dollars(capital)} ${verb} on ${chain}, and every hash. Over ${hold} days that is about ${txs + weeks} entries. Withdraw only from a page ${p.name} itself links, and pay nothing to claim.`,
       '$0',
-      '5 minutes to start the log, then 2 minutes per transaction',
+      `${5 + weeks} minutes across the ${hold}-day log`,
     ),
   ];
   const gasLabel = gasTotal < 0.1 ? 'under $0.10 gas' : gasTotal >= 10 || Number.isInteger(gasTotal) ? `~${dollars(gasTotal)} gas` : `~$${gasTotal.toFixed(2)} gas`;
@@ -730,28 +813,47 @@ function clipRatios(sorted: readonly number[]): number[] {
   return clipped.length >= MIN_CATEGORY_SAMPLE ? clipped : sorted.slice();
 }
 
-function statsOf(sortedPositive: readonly number[], category: string, global: GlobalMultiple | null): MultipleStats {
-  if (global !== null && sortedPositive.length < MIN_CATEGORY_SAMPLE) {
-    return {
-      category,
-      sample: sortedPositive.length,
-      used: global.sample_clipped,
-      source: 'global',
-      multiple: global.multiple,
-      p25: global.p25,
-      p75: global.p75,
-    };
-  }
-  const used = clipRatios(sortedPositive);
+interface RatioStats {
+  sample: number;
+  used: number;
+  multiple: number;
+  p25: number;
+  p75: number;
+}
+
+function summarizeRatios(sorted: readonly number[]): RatioStats {
+  const used = clipRatios(sorted);
   return {
-    category,
-    sample: sortedPositive.length,
+    sample: sorted.length,
     used: used.length,
-    source: 'category',
     multiple: round6(percentile(used, 0.5)),
     p25: round6(percentile(used, 0.25)),
     p75: round6(percentile(used, 0.75)),
   };
+}
+
+interface TokenRate {
+  with_token: number;
+  total: number;
+  share: number;
+  factor: number;
+}
+
+function tokenRates(protocols: readonly SnapshotProtocol[]): Map<string, TokenRate> {
+  const total = new Map<string, number>();
+  const withToken = new Map<string, number>();
+  for (const p of protocols) {
+    const category = p.category ?? 'Uncategorized';
+    total.set(category, (total.get(category) ?? 0) + 1);
+    if (!isPreToken(p)) withToken.set(category, (withToken.get(category) ?? 0) + 1);
+  }
+  const rates = new Map<string, TokenRate>();
+  for (const [category, count] of total) {
+    const got = withToken.get(category) ?? 0;
+    const share = count === 0 ? 0 : got / count;
+    rates.set(category, { with_token: got, total: count, share: round6(share), factor: tokenFactor(share) });
+  }
+  return rates;
 }
 
 export function buildGlobalMultiple(protocols: readonly SnapshotProtocol[]): GlobalMultiple {
@@ -780,16 +882,65 @@ export function buildGlobalMultiple(protocols: readonly SnapshotProtocol[]): Glo
 
 export function categoryMultipleTable(protocols: readonly SnapshotProtocol[], global: GlobalMultiple): MultipleStats[] {
   const buckets = new Map<string, number[]>();
+  const byFamily = new Map<Playbook, number[]>();
   for (const p of protocols) {
     const category = p.category ?? 'Uncategorized';
     if (!buckets.has(category)) buckets.set(category, []);
     if (!isComparable(p) || p.mcap_usd === null) continue;
-    buckets.get(category)!.push(p.mcap_usd / p.tvl_usd);
+    const ratio = p.mcap_usd / p.tvl_usd;
+    buckets.get(category)!.push(ratio);
+    const play = playbookOf(p.category);
+    const family = byFamily.get(play) ?? [];
+    family.push(ratio);
+    byFamily.set(play, family);
   }
+  const familySummary = new Map<Playbook, RatioStats>();
+  for (const [play, ratios] of byFamily) {
+    const sorted = ratios.slice().sort((a, b) => a - b);
+    if (sorted.length >= MIN_CATEGORY_SAMPLE) familySummary.set(play, summarizeRatios(sorted));
+  }
+  const rates = tokenRates(protocols);
   const rows: MultipleStats[] = [];
   for (const [category, ratios] of buckets) {
     const sorted = ratios.slice().sort((a, b) => a - b);
-    rows.push(statsOf(sorted, category, global));
+    const play = playbookOf(category === 'Uncategorized' ? null : category);
+    const family = familySummary.get(play);
+    const familySample = (byFamily.get(play) ?? []).length;
+    const rate = rates.get(category) ?? { with_token: 0, total: 0, share: 0, factor: tokenFactor(0) };
+    const base = {
+      category,
+      family: play,
+      family_sample: family ? family.sample : familySample,
+      token_with: rate.with_token,
+      token_total: rate.total,
+      token_share: rate.share,
+      token_factor: rate.factor,
+    };
+    if (sorted.length >= MIN_CATEGORY_SAMPLE) {
+      const stats = summarizeRatios(sorted);
+      rows.push({ ...base, sample: stats.sample, used: stats.used, source: 'category', multiple: stats.multiple, p25: stats.p25, p75: stats.p75 });
+    } else if (family !== undefined) {
+      rows.push({
+        ...base,
+        sample: sorted.length,
+        family_sample: family.sample,
+        used: family.used,
+        source: 'family',
+        multiple: family.multiple,
+        p25: family.p25,
+        p75: family.p75,
+      });
+    } else {
+      rows.push({
+        ...base,
+        sample: sorted.length,
+        used: global.sample_clipped,
+        source: 'global',
+        multiple: global.multiple,
+        p25: global.p25,
+        p75: global.p75,
+      });
+    }
   }
   rows.sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
   return rows;
@@ -804,9 +955,14 @@ function riskFlags(p: SnapshotProtocol, age: number | null, stats: MultipleStats
   else if (age < 90) flags.push(`Listed ${age} days ago. This model’s token window peaks later, around 6 to 18 months.`);
   else if (age >= 1095) flags.push(`Listed ${age} days ago. Past three years, this model treats a new token as less likely.`);
   if (p.chains.length <= 1) flags.push('Deployed on one chain in this snapshot.');
-  if (stats.source === 'global') {
-    const noun = stats.sample === 1 ? 'traded comparable' : 'traded comparables';
-    flags.push(`Category has ${stats.sample} ${noun} (under ${MIN_CATEGORY_SAMPLE}), so the multiple is the global median.`);
+  if (stats.source === 'family') {
+    flags.push(`Category has ${stats.sample} traded comparables (under ${MIN_CATEGORY_SAMPLE}), so the multiple is the ${stats.family} family median from ${stats.family_sample} tokens.`);
+  } else if (stats.source === 'global') {
+    flags.push(`Category has ${stats.sample} traded comparables and the ${stats.family} family has ${stats.family_sample}, both under ${MIN_CATEGORY_SAMPLE}, so the multiple is the global median.`);
+  }
+  if (stats.token_share < 0.25) {
+    const pct = Math.round(stats.token_share * 100);
+    flags.push(`Only ${pct}% of ${stats.category} protocols record a token (${stats.token_with} of ${stats.token_total}), so token likelihood pulls this row down.`);
   }
   return flags;
 }
@@ -823,12 +979,18 @@ export function buildBoard(snapshot: Snapshot): BoardRow[] {
   const byCategory = new Map(table.map((row) => [row.category, row]));
   const fallback: MultipleStats = {
     category: 'Uncategorized',
+    family: 'other',
     sample: 0,
+    family_sample: 0,
     used: global.sample_clipped,
     source: 'global',
     multiple: global.multiple,
     p25: global.p25,
     p75: global.p75,
+    token_with: 0,
+    token_total: 0,
+    token_share: 0,
+    token_factor: tokenFactor(0),
   };
   const watch = new Set(snapshot.watchlist);
   const chosen: SnapshotProtocol[] = [];
@@ -851,9 +1013,9 @@ export function buildBoard(snapshot: Snapshot): BoardRow[] {
     const maturity = maturityFactor(age);
     const breadth = breadthFactor(p.chains);
     const size = sizeFactor(p.tvl_usd);
-    const implied = impliedValue(p.tvl_usd, stats.multiple, growth, maturity, breadth, size);
-    const low = impliedValue(p.tvl_usd, stats.p25, growth, maturity, breadth, size);
-    const high = impliedValue(p.tvl_usd, stats.p75, growth, maturity, breadth, size);
+    const implied = impliedValue(p.tvl_usd, stats.multiple, growth, maturity, breadth, size, stats.token_factor);
+    const low = impliedValue(p.tvl_usd, stats.p25, growth, maturity, breadth, size, stats.token_factor);
+    const high = impliedValue(p.tvl_usd, stats.p75, growth, maturity, breadth, size, stats.token_factor);
     const farm = farmPlan(p, age);
     return {
       p,
@@ -893,6 +1055,11 @@ export function buildBoard(snapshot: Snapshot): BoardRow[] {
     multiple_p75: s.stats.p75,
     multiple_source: s.stats.source,
     comparable_count: s.stats.sample,
+    family_sample: s.stats.family_sample,
+    token_share: s.stats.token_share,
+    token_with: s.stats.token_with,
+    token_in_category: s.stats.token_total,
+    token_factor: s.stats.token_factor,
     growth_factor: s.growth,
     maturity_factor: s.maturity,
     breadth_factor: s.breadth,

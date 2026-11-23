@@ -79,8 +79,15 @@
     return round6(SIZE_LO + t * SIZE_SPAN);
   }
 
-  function impliedValue(tvl, multiple, growth, maturity, breadth, size) {
-    var n = Math.round(tvl * multiple * growth * maturity * breadth * size);
+  function tokenFactor(share) {
+    var s = share;
+    if (s < 0) s = 0;
+    if (s > 1) s = 1;
+    return round6(0.72 + s * 0.4);
+  }
+
+  function impliedValue(tvl, multiple, growth, maturity, breadth, size, token) {
+    var n = Math.round(tvl * multiple * growth * maturity * breadth * size * token);
     if (!isFinite(n) || n < 1) return 1;
     return n;
   }
@@ -393,7 +400,7 @@
         el('td', { class: 'num', text: formatUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + changeClass, text: formatPct(r.change_7d) }),
         el('td', { class: 'num', text: formatAge(r.age_days) }),
-        el('td', { class: 'num', text: formatMult(r.category_multiple) }),
+        el('td', { class: 'num' }, formatMult(r.category_multiple), el('span', { class: 'range', text: r.multiple_source })),
         el('td', { class: 'num implied' }, formatUsd(r.implied_value_usd), el('span', { class: 'range', text: formatUsd(r.low_value_usd) + ' – ' + formatUsd(r.high_value_usd) })),
         el('td', { class: 'farm', text: r.farm_headline })
       );
@@ -434,11 +441,16 @@
   }
 
   function renderDetail(row) {
-    var check = impliedValue(row.tvl_usd, row.category_multiple, row.growth_factor, row.maturity_factor, row.breadth_factor, row.size_factor);
+    var check = impliedValue(row.tvl_usd, row.category_multiple, row.growth_factor, row.maturity_factor, row.breadth_factor, row.size_factor, row.token_factor);
     var mult = categoryMultiple(row.category);
-    var source = row.multiple_source === 'global'
-      ? 'global median, ' + row.comparable_count + ' traded in category'
-      : 'category median, n=' + row.comparable_count;
+    var source = row.multiple_source === 'family'
+      ? row.playbook + ' family median, ' + row.comparable_count + ' in category, ' + row.family_sample + ' in the family'
+      : row.multiple_source === 'global'
+        ? 'global median, ' + row.comparable_count + ' in category, ' + row.family_sample + ' in the ' + row.playbook + ' family'
+        : 'category median, n=' + row.comparable_count;
+    var shareLabel = tokenFactor(row.token_share) === row.token_factor
+      ? Math.round(row.token_share * 100) + '% of ' + row.category + ' record a token (' + row.token_with + '/' + row.token_in_category + ')'
+      : 'share of ' + row.category + ' that record a token';
     function factor(op, label, value) {
       return el('div', { class: 'factor' }, el('span', { class: 'op', text: op }), el('span', { text: label }), el('b', { text: value }));
     }
@@ -483,16 +495,17 @@
             el('div', { class: 'big', text: formatUsd(row.implied_value_usd) }),
             el('p', { class: 'foot', text: 'Low–high ' + formatUsd(row.low_value_usd) + ' – ' + formatUsd(row.high_value_usd) + ' from the p25 and p75 multiples. Board figure ' + (check === row.implied_value_usd ? 'matches the formula.' : 'differs from a recompute (' + formatUsd(check) + ').') }),
             factor('TVL', formatUsd(row.tvl_usd) + ' on record', formatUsd(row.tvl_usd)),
-            factor('×', 'Category multiple (' + source + ')', formatMult(row.category_multiple)),
+            factor('×', 'Multiple (' + row.multiple_source + ', ' + source + ')', formatMult(row.category_multiple)),
             factor('×', 'Growth from 7d ' + formatPct(row.change_7d), row.growth_factor.toFixed(3)),
             factor('×', 'Maturity, ' + formatAge(row.age_days) + ' with no token', row.maturity_factor.toFixed(3)),
             factor('×', 'Chain breadth, ' + (row.chains.length || 0) + ' chains', row.breadth_factor.toFixed(2)),
             factor('×', 'Size tilt from TVL', row.size_factor.toFixed(3)),
+            factor('×', 'Token likelihood, ' + shareLabel, row.token_factor.toFixed(3)),
             el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { text: formatUsd(row.implied_value_usd) }))
           ),
           el('section', { class: 'card', style: 'margin-top:16px' },
             el('h3', { text: 'Comparables in ' + row.category }),
-            el('p', { class: 'foot', text: mult && mult.source === 'global' ? 'Under 5 traded tokens in this category, so the row uses the global median ' + formatMult(DATA.global_multiple.multiple) + '.' : 'Median of traded tokens in this category, outliers clipped.' }),
+            el('p', { class: 'foot', text: !mult || mult.source === 'category' ? 'Median of traded tokens in this category, outliers clipped.' : mult.source === 'family' ? 'Under 5 traded tokens here, so the multiple is the ' + row.playbook + ' family median ' + formatMult(row.category_multiple) + '.' : 'Under 5 traded tokens in the category and in the ' + row.playbook + ' family, so the multiple is the global median ' + formatMult(DATA.global_multiple.multiple) + '.' }),
             comp
           ),
           el('section', { class: 'card', style: 'margin-top:16px' },
@@ -581,12 +594,13 @@
     });
     return el('div', { class: 'method' },
       el('h3', { text: 'The formula' }),
-      el('p', null, el('code', { text: 'impliedValue = round(tvl × categoryMultiple × growthFactor × maturityFactor × breadthFactor × sizeFactor)' })),
+      el('p', null, el('code', { text: 'impliedValue = round(tvl × categoryMultiple × growthFactor × maturityFactor × breadthFactor × sizeFactor × tokenFactor)' })),
       el('p', { text: 'growthFactor is 1 + clamp(change_7d, -30, 60) / 100 × 0.5. A missing 7-day change is 1.' }),
       el('p', { text: 'maturityFactor is piecewise linear through day 0 = 0.85, day 180 = 1.00, day 365 = 1.15, day 540 = 1.12, day 1095 = 0.90, day 1825 = 0.72. A missing listed date is 1. The rise is the 6 to 18 month window. After about 3 years the factor falls, because a token has become less likely.' }),
-      el('p', { text: 'breadthFactor is 1.00, 1.03, 1.06 or 1.08 for 1, 2, 3 or 4+ chains. sizeFactor moves from 0.97 near $5M TVL to 1.08 at $10B, on a log scale. TVL already scales the result; size is only a tilt.' }),
+      el('p', { text: 'breadthFactor is 1.00, 1.03, 1.06 or 1.08 for 1, 2, 3 or 4+ chains. sizeFactor moves from 0.97 near $5M TVL to 1.08 at $10B, on a log scale. tokenFactor is 0.72 + 0.40 times the share of the category that records a token.' }),
       el('h3', { text: 'Category multiples' }),
-      el('p', { text: 'categoryMultiple is the median mcap/TVL of protocols in that category with a positive market cap, after clipping to the 5th–95th percentile. Fewer than 5 such tokens, and the row uses the global median. Low and high swap in the 25th and 75th percentiles. Global set: ' + g.sample_positive + ' positive ratios, ' + g.sample_clipped + ' after the clip, median ' + formatMult(g.multiple) + ', p25 ' + formatMult(g.p25) + ', p75 ' + formatMult(g.p75) + '.' }),
+      el('p', { text: 'tokenFactor is 0.72 + 0.40 × the share of protocols in the category that record a token. A category that rarely launches a token, such as risk curators, ranks lower than the same TVL where tokens are common.' }),
+      el('p', { text: 'categoryMultiple is the median mcap/TVL of protocols in that category with a positive market cap, after clipping to the 5th–95th percentile. Fewer than 5, and the row uses its playbook family median (yield, lending, dex, perps, and the rest). Fewer than 5 in the family too, and it uses the global median. The board labels the source category, family or global. Global set: ' + g.sample_positive + ' positive ratios, ' + g.sample_clipped + ' after the clip, median ' + formatMult(g.multiple) + ', p25 ' + formatMult(g.p25) + ', p75 ' + formatMult(g.p75) + '.' }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'mini' },
           el('thead', null, el('tr', null,
