@@ -21,7 +21,7 @@ const chrome = spawn(chromeBin, [
   '--hide-scrollbars',
   '--force-device-scale-factor=1',
   `--remote-debugging-port=${port}`,
-  '--window-size=1440,900',
+  '--window-size=1440,1320',
   'about:blank',
 ], { stdio: 'ignore' });
 
@@ -69,7 +69,7 @@ try {
   await send('Runtime.enable');
   await send('Emulation.setDeviceMetricsOverride', {
     width: 1440,
-    height: 900,
+    height: 1320,
     deviceScaleFactor: 1,
     mobile: false,
   });
@@ -84,11 +84,18 @@ try {
     return result.result?.value;
   }
   async function shot(name) {
-    const image = await send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    let quality = 62;
+    let bytes = Buffer.alloc(0);
+    for (; quality >= 28; quality -= 6) {
+      const image = await send('Page.captureScreenshot', { format: 'jpeg', quality, fromSurface: true });
+      bytes = Buffer.from(image.data, 'base64');
+      if (bytes.length <= 240_000) break;
+    }
     const file = resolve(shotDir, name);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, Buffer.from(image.data, 'base64'));
-    process.stdout.write(`screenshot: ${file}\n`);
+    writeFileSync(file, bytes);
+    process.stdout.write(`screenshot: ${file} ${bytes.length} bytes q=${quality}\n`);
+    if (bytes.length > 240_000) throw new Error(`${name} is ${bytes.length} bytes`);
   }
 
   await open(pageUrl);
@@ -97,13 +104,13 @@ try {
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
   await delay(150);
-  await shot('1-board.png');
+  await shot('1-board.jpg');
 
   await open(`${pageUrl}#curvance`);
   await delay(150);
   const detail = await evalJs('document.body.innerText.includes("Curvance") && document.body.innerText.includes("health factor")');
   if (!detail) throw new Error('detail view did not open Curvance');
-  await shot('2-detail.png');
+  await shot('2-detail.jpg');
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
   await delay(100);
@@ -121,7 +128,13 @@ try {
   await delay(150);
   const filtered = await evalJs('document.body.innerText.includes("Risk Curators") && document.body.innerText.includes("Base") && document.body.innerText.includes("Clear")');
   if (!filtered) throw new Error('filtered view did not show the chips');
-  await shot('3-filtered.png');
+  await shot('3-filtered.jpg');
+
+  await evalJs(`document.querySelector('[data-tab="evidence"]').click()`);
+  await delay(250);
+  const evidence = await evalJs('document.body.innerText.includes("Market cap against TVL") && document.body.innerText.includes("Not kept")');
+  if (!evidence) throw new Error('evidence tab did not render');
+  await shot('4-evidence.jpg');
 } finally {
   if (ws && ws.readyState === WebSocket.OPEN) ws.close();
   chrome.kill('SIGKILL');

@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/maskarajr/airdrop-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/maskarajr/airdrop-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-Token Radar ranks protocols that record no token by an implied value taken only from the sealed snapshot. The multiple is the median market-cap / TVL of protocols whose token already trades, after clipping the 5th to 95th percentile: the category median when it has at least five tokens, otherwise the playbook-family median, otherwise the global median. Growth, days listed with no token, chain breadth, size and the share of that category that already records a token scale the result. Traded tokens stay off the board, in a comparables tab, and every ranked row has a farm plan that names the action and the chain and states a dollar cost and a time.
+Token Radar ranks protocols that record no token by a market cap fitted on the tokens that already trade. The fit is log(market cap) on log(TVL). Family, 7-day growth and age are added only when both held-out checks improve: leave-one-out, and a walk-forward split on the listing date. On this snapshot only the TVL elasticity is kept. Launch odds are a smoothed rate by category, age band and TVL band, scored on a held-out half. Expected value is implied value times those odds, and rank still follows implied value. Each row has a costed farm plan and a FARM, MARGINAL or SKIP verdict.
 
 ## Run it
 
