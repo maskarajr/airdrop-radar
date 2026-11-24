@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/maskarajr/airdrop-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/maskarajr/airdrop-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-Token Radar ranks protocols that record no token by a market cap fitted on the tokens that already trade. The fit is log(market cap) on log(TVL). Family, 7-day growth and age are added only when both held-out checks improve: leave-one-out, and a walk-forward split on the listing date. On this snapshot only the TVL elasticity is kept. Launch odds are a smoothed rate by category, age band and TVL band, scored on a held-out half. Expected value is implied value times those odds, and rank still follows implied value. Each row has a costed farm plan and a FARM, MARGINAL or SKIP verdict.
+Token Radar ranks protocols that record no token by implied value: the market cap a held-out log-log TVL fit gives if a token launches, times one more week of 7-day change net of the snapshot median, times launch odds. Odds are a smoothed rate by years with no token, 7-day growth band, TVL band and category, scored on a held-out half. A farm row's modelled drop is that implied value times a drop share times the deposit's slice of TVL. Net subtracts gas, fees and a 4% T-bill over the hold. FARM means net above zero and at least $25 an hour of the plan's stated work.
 
 ## Run it
 

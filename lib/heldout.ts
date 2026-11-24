@@ -65,14 +65,30 @@ export interface ScatterPoint {
   mcap: number;
 }
 
+export interface OddsTerm {
+  term: string;
+  brier: number;
+  auc: number;
+}
+
+export interface OddsCell {
+  key: string;
+  k: number;
+  n: number;
+}
+
 export interface Evidence {
   comparable_count: number;
   walk_cutoff: string;
   walk_train: number;
   walk_test: number;
   baseline: Miss & { walk_median: number; walk_mean: number };
-  /** Leave-one-out and walk-forward for the model that is actually used. */
+  /** Leave-one-out and walk-forward for the log-log TVL fit. */
   heldout: { loo_median: number; loo_mean: number; walk_median: number; walk_mean: number };
+  /** Slope fixed at 1: market cap moves one-for-one with TVL. */
+  flat: { median: number; mean: number };
+  /** Share of left-out tokens whose log miss falls inside the training p25–p75 band. */
+  band_coverage: number;
   terms: TermRow[];
   kept: string[];
   dropped: string[];
@@ -89,8 +105,12 @@ export interface Evidence {
   band: { low: number; high: number };
   residual_p25: number;
   residual_p75: number;
+  residuals: number[];
   scatter: ScatterPoint[];
   kind: 'ols' | 'category-median';
+  odds_terms: OddsTerm[];
+  odds_cells: OddsCell[];
+  odds_base: number;
 }
 
 export interface OddsScore {
@@ -403,19 +423,58 @@ export interface Heldout {
   oddsFor: (protocol: SnapshotProtocol) => OddsAssignment;
 }
 
-function ageBand(age: number | null): string {
+export function yearBand(age: number | null): string {
   if (age === null) return 'unknown';
-  if (age < 180) return 'under-6m';
-  if (age < 540) return '6-18m';
-  if (age < 1095) return '18m-3y';
-  return 'over-3y';
+  if (age < 365) return 'under-1y';
+  if (age < 730) return '1y';
+  if (age < 1095) return '2y';
+  return '3y-plus';
 }
 
-function tvlBand(tvl: number): string {
+export function growthBand(change: number | null): string {
+  if (change === null || !Number.isFinite(change)) return 'missing';
+  if (change <= -10) return 'down';
+  if (change < 10) return 'flat';
+  return 'up';
+}
+
+export function tvlBand(tvl: number): string {
   if (tvl < 100_000_000) return '50-100m';
   if (tvl < 250_000_000) return '100-250m';
   if (tvl < 1_000_000_000) return '250m-1b';
   return 'over-1b';
+}
+
+function flatLoo(obs: Obs[]): { median: number; mean: number } {
+  const errs: number[] = [];
+  for (let i = 0; i < obs.length; i += 1) {
+    let s = 0;
+    const n = obs.length - 1;
+    for (let j = 0; j < obs.length; j += 1) {
+      if (j === i) continue;
+      s += obs[j]!.y - obs[j]!.logTvl;
+    }
+    errs.push(factorMiss(Math.exp(obs[i]!.logTvl + s / n), obs[i]!.mcap));
+  }
+  const miss = missOf(errs);
+  return { median: miss.median, mean: miss.mean };
+}
+
+function bandCoverage(obs: Obs[], spec: Spec): number {
+  let hit = 0;
+  for (let i = 0; i < obs.length; i += 1) {
+    const train = obs.slice(0, i).concat(obs.slice(i + 1));
+    const fit = fitBeta(train, spec);
+    if (fit === null) continue;
+    const resid: number[] = [];
+    for (const o of train) resid.push(o.y - predictLn(o, fit, spec));
+    resid.sort((a, b) => a - b);
+    const lo = percentile(resid, 0.25);
+    const hi = percentile(resid, 0.75);
+    const err = obs[i]!.y - predictLn(obs[i]!, fit, spec);
+    if (err >= lo && err <= hi) hit += 1;
+  }
+  return round4(hit / obs.length);
 }
 
 interface Counts {
@@ -452,35 +511,40 @@ function oddsIndex(rows: { key: string[]; y: number }[]): OddsIndex {
   return { map, base: rows.length === 0 ? 0.5 : k / rows.length };
 }
 
-function keysFor(family: string, category: string, age: string, tvl: string): string[] {
+type OddsDepth = 'base' | 'years' | 'growth' | 'tvl' | 'category';
+
+function keysFor(year: string, growth: string, tvl: string, category: string): string[] {
   return [
     'g',
-    `f:${family}`,
-    `fa:${family}|${age}`,
-    `fat:${family}|${age}|${tvl}`,
-    `cat:${category}|${age}|${tvl}`,
+    `y:${year}`,
+    `yg:${year}|${growth}`,
+    `ygt:${year}|${growth}|${tvl}`,
+    `c:${category}|${year}|${growth}|${tvl}`,
   ];
 }
 
-function assign(index: OddsIndex, family: string, category: string, age: string, tvl: string, model: OddsScore['model']): OddsAssignment {
-  const g = index.base;
-  const f = rate(index.map.get(`f:${family}`), g);
-  const fa = rate(index.map.get(`fa:${family}|${age}`), f);
-  const fat = rate(index.map.get(`fat:${family}|${age}|${tvl}`), fa);
-  const catCell = index.map.get(`cat:${category}|${age}|${tvl}`);
-  const cat = rate(catCell, fat);
-  const famCell = index.map.get(`f:${family}`);
-  if (model === 'base') return { p: round6p(g), tier: tierOf(g), level: 'base rate', cell: index.map.get('g')?.n ?? 0 };
-  if (model === 'family') return { p: round6p(f), tier: tierOf(f), level: 'family', cell: famCell?.n ?? 0 };
-  const nCat = catCell?.n ?? 0;
-  const nFat = index.map.get(`fat:${family}|${age}|${tvl}`)?.n ?? 0;
-  const nFa = index.map.get(`fa:${family}|${age}`)?.n ?? 0;
-  let level = 'global';
-  if (nCat >= MIN_CELL) level = 'category, age, TVL';
-  else if (nFat >= MIN_CELL) level = 'family, age, TVL';
-  else if (nFa >= MIN_CELL) level = 'family, age';
-  else if ((famCell?.n ?? 0) >= MIN_CELL) level = 'family';
-  return { p: round6p(cat), tier: tierOf(cat), level, cell: nCat };
+function pAt(index: OddsIndex, year: string, growth: string, tvl: string, category: string, depth: OddsDepth): number {
+  const base = index.base;
+  if (depth === 'base') return base;
+  const years = rate(index.map.get(`y:${year}`), base);
+  if (depth === 'years') return years;
+  const grown = rate(index.map.get(`yg:${year}|${growth}`), years);
+  if (depth === 'growth') return grown;
+  const sized = rate(index.map.get(`ygt:${year}|${growth}|${tvl}`), grown);
+  if (depth === 'tvl') return sized;
+  return rate(index.map.get(`c:${category}|${year}|${growth}|${tvl}`), sized);
+}
+
+function assign(index: OddsIndex, year: string, growth: string, tvl: string, category: string): OddsAssignment {
+  const p = round6p(pAt(index, year, growth, tvl, category, 'category'));
+  const cell = index.map.get(`c:${category}|${year}|${growth}|${tvl}`);
+  const n = cell?.n ?? 0;
+  let level = 'base rate';
+  if (n >= MIN_CELL) level = 'category, years, 7-day, TVL';
+  else if ((index.map.get(`ygt:${year}|${growth}|${tvl}`)?.n ?? 0) >= MIN_CELL) level = 'years, 7-day, TVL';
+  else if ((index.map.get(`yg:${year}|${growth}`)?.n ?? 0) >= MIN_CELL) level = 'years, 7-day';
+  else if ((index.map.get(`y:${year}`)?.n ?? 0) >= MIN_CELL) level = 'years with no token';
+  return { p, tier: tierOf(p), level, cell: n };
 }
 
 function round6p(n: number): number {
@@ -518,40 +582,48 @@ function auc(pairs: { p: number; y: number }[]): number {
 
 interface OddsRow {
   protocol: SnapshotProtocol;
-  family: string;
   category: string;
-  age: string;
+  year: string;
+  growth: string;
   tvl: string;
   y: number;
   slug: string;
 }
 
-function scoreOdds(rows: OddsRow[]): { score: OddsScore; full: OddsIndex; model: OddsScore['model'] } {
+function scoreOdds(rows: OddsRow[]): { score: OddsScore; full: OddsIndex; terms: OddsTerm[]; cells: OddsCell[] } {
   const ordered = rows.slice().sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   const train = ordered.filter((_, i) => i % 2 === 0);
   const test = ordered.filter((_, i) => i % 2 === 1);
-  const trainIndex = oddsIndex(train.map((r) => ({ key: keysFor(r.family, r.category, r.age, r.tvl), y: r.y })));
+  const trainIndex = oddsIndex(train.map((r) => ({ key: keysFor(r.year, r.growth, r.tvl, r.category), y: r.y })));
   const ys = test.map((r) => r.y);
-  const basePs = test.map(() => trainIndex.base);
-  const famPs = test.map((r) => assign(trainIndex, r.family, r.category, r.age, r.tvl, 'family').p);
-  const hierPs = test.map((r) => assign(trainIndex, r.family, r.category, r.age, r.tvl, 'hierarchy').p);
-  const baseBrier = brier(basePs, ys);
-  const candidates: { model: OddsScore['model']; brier: number; ps: number[] }[] = [
-    { model: 'base', brier: baseBrier, ps: basePs },
-    { model: 'family', brier: brier(famPs, ys), ps: famPs },
-    { model: 'hierarchy', brier: brier(hierPs, ys), ps: hierPs },
+  const depths: { depth: OddsDepth; term: string }[] = [
+    { depth: 'base', term: 'base rate' },
+    { depth: 'years', term: 'years with no token' },
+    { depth: 'growth', term: '7-day growth band' },
+    { depth: 'tvl', term: 'TVL band' },
+    { depth: 'category', term: 'category' },
   ];
-  candidates.sort((a, b) => a.brier - b.brier || (a.model < b.model ? -1 : 1));
-  const best = candidates[0]!;
-  const full = oddsIndex(rows.map((r) => ({ key: keysFor(r.family, r.category, r.age, r.tvl), y: r.y })));
+  const terms: OddsTerm[] = [];
+  let fullPs: number[] = [];
+  for (const step of depths) {
+    const ps = test.map((r) => pAt(trainIndex, r.year, r.growth, r.tvl, r.category, step.depth));
+    if (step.depth === 'category') fullPs = ps;
+    terms.push({ term: step.term, brier: round4(brier(ps, ys)), auc: round4(auc(test.map((r, i) => ({ p: ps[i]!, y: r.y })))) });
+  }
+  const baseBrier = terms[0]!.brier;
+  const full = oddsIndex(rows.map((r) => ({ key: keysFor(r.year, r.growth, r.tvl, r.category), y: r.y })));
+  const cells = [...full.map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([key, cell]) => ({ key, k: cell.k, n: cell.n }));
   return {
-    model: best.model,
+    terms,
+    cells,
     full,
     score: {
-      model: best.model,
-      brier: round4(best.brier),
-      base_brier: round4(baseBrier),
-      auc: round4(auc(test.map((r, i) => ({ p: best.ps[i]!, y: r.y })))),
+      model: 'hierarchy',
+      brier: terms[terms.length - 1]!.brier,
+      base_brier: baseBrier,
+      auc: round4(auc(test.map((r, i) => ({ p: fullPs[i]!, y: r.y })))),
       train: train.length,
       test: test.length,
       base_rate: round4(trainIndex.base),
@@ -586,55 +658,21 @@ export function buildHeldout(protocols: SnapshotProtocol[], asOf: string, deps: 
   const baseWalkErr = errorsOn(split.train, split.test, emptySpec())!;
   const baseWalk = missOf(baseWalkErr);
 
-  let spec = emptySpec();
-  let currentLoo = baseLoo.median;
-  let currentWalk = baseWalk.median;
-  const terms: TermRow[] = [];
-  const order: { key: keyof Spec; term: TermRow['term'] }[] = [
-    { key: 'logTvl', term: 'log TVL' },
-    { key: 'family', term: 'family' },
-    { key: 'growth', term: 'growth' },
-    { key: 'age', term: 'age' },
+  const spec: Spec = { logTvl: true, family: false, growth: false, age: false };
+  const finalLoo = missOf(looErrors(obs, spec)!);
+  const finalWalk = missOf(errorsOn(split.train, split.test, spec)!);
+  const terms: TermRow[] = [
+    {
+      term: 'log TVL',
+      kept: true,
+      loo_median: finalLoo.median,
+      loo_mean: finalLoo.mean,
+      walk_median: finalWalk.median,
+      walk_mean: finalWalk.mean,
+      against_loo_median: baseLoo.median,
+      against_walk_median: baseWalk.median,
+    },
   ];
-  for (const step of order) {
-    const next: Spec = { ...spec, [step.key]: true };
-    const loo = looErrors(obs, next);
-    const walk = errorsOn(split.train, split.test, next);
-    if (loo === null || walk === null) {
-      terms.push({
-        term: step.term,
-        kept: false,
-        loo_median: null,
-        loo_mean: null,
-        walk_median: null,
-        walk_mean: null,
-        against_loo_median: currentLoo,
-        against_walk_median: currentWalk,
-      });
-      continue;
-    }
-    const L = missOf(loo);
-    const W = missOf(walk);
-    const kept = L.median < currentLoo && W.median < currentWalk;
-    terms.push({
-      term: step.term,
-      kept,
-      loo_median: L.median,
-      loo_mean: L.mean,
-      walk_median: W.median,
-      walk_mean: W.mean,
-      against_loo_median: currentLoo,
-      against_walk_median: currentWalk,
-    });
-    if (kept) {
-      spec = next;
-      currentLoo = L.median;
-      currentWalk = W.median;
-    }
-  }
-
-  const finalLoo = isBaseline(spec) ? baseLoo : missOf(looErrors(obs, spec)!);
-  const finalWalk = isBaseline(spec) ? baseWalk : missOf(errorsOn(split.train, split.test, spec)!);
   const fullFit = isBaseline(spec) ? null : fitBeta(obs, spec);
   const globalMultiple = ratioIndex(obs).global;
   const line = lineFrom(fullFit, spec, globalMultiple);
@@ -649,6 +687,8 @@ export function buildHeldout(protocols: SnapshotProtocol[], asOf: string, deps: 
   residuals.sort((a, b) => a - b);
   const residualP25 = percentile(residuals, 0.25);
   const residualP75 = percentile(residuals, 0.75);
+  const flat = flatLoo(obs);
+  const coverage = bandCoverage(obs, spec);
 
   const evidence: Evidence = {
     comparable_count: obs.length,
@@ -682,8 +722,14 @@ export function buildHeldout(protocols: SnapshotProtocol[], asOf: string, deps: 
     band: { low: residualP25 / Math.log(10), high: residualP75 / Math.log(10) },
     residual_p25: residualP25,
     residual_p75: residualP75,
+    residuals,
     scatter: obs.map((o) => ({ slug: o.slug, tvl: o.tvl, mcap: o.mcap })),
     kind: fullFit === null ? 'category-median' : 'ols',
+    flat: { median: flat.median, mean: flat.mean },
+    band_coverage: coverage,
+    odds_terms: [],
+    odds_cells: [],
+    odds_base: 0,
   };
 
   const logMcap = (protocol: SnapshotProtocol): number | null => {
@@ -709,27 +755,25 @@ export function buildHeldout(protocols: SnapshotProtocol[], asOf: string, deps: 
   for (const protocol of protocols) {
     const tvl = protocol.tvl_usd ?? 0;
     if (!(tvl > 0)) continue;
+    const age = deps.ageDays(asOf, protocol.listed_at);
     oddsRows.push({
       protocol,
-      family: deps.playbookOf(protocol.category),
       category: protocol.category ?? 'Uncategorized',
-      age: ageBand(deps.ageDays(asOf, protocol.listed_at)),
+      year: yearBand(age),
+      growth: growthBand(protocol.change_7d),
       tvl: tvlBand(tvl),
       y: deps.isPreToken(protocol) ? 0 : 1,
       slug: protocol.slug,
     });
   }
   const scored = scoreOdds(oddsRows);
+  evidence.odds_terms = scored.terms;
+  evidence.odds_cells = scored.cells;
+  evidence.odds_base = scored.full.base;
   const oddsFor = (protocol: SnapshotProtocol): OddsAssignment => {
     const tvl = protocol.tvl_usd ?? 0;
-    return assign(
-      scored.full,
-      deps.playbookOf(protocol.category),
-      protocol.category ?? 'Uncategorized',
-      ageBand(deps.ageDays(asOf, protocol.listed_at)),
-      tvlBand(tvl),
-      scored.model,
-    );
+    const age = deps.ageDays(asOf, protocol.listed_at);
+    return assign(scored.full, yearBand(age), growthBand(protocol.change_7d), tvlBand(tvl), protocol.category ?? 'Uncategorized');
   };
 
   return { evidence, logMcap, odds: scored.score, oddsFor };

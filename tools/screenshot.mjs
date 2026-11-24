@@ -106,33 +106,40 @@ try {
   await delay(150);
   await shot('1-board.jpg');
 
-  await open(`${pageUrl}#curvance`);
-  await delay(150);
-  const detail = await evalJs('document.body.innerText.includes("Curvance") && document.body.innerText.includes("health factor")');
-  if (!detail) throw new Error('detail view did not open Curvance');
+  await evalJs(`document.querySelector('[data-dep="10000"]').click()`);
+  await delay(100);
+  await evalJs(`location.hash = 'metalx-swap'`);
+  await delay(200);
+  const detail = await evalJs('document.body.innerText.includes("MetalX") && document.body.innerText.includes("FARM") && document.body.innerText.includes("Cost") && document.body.innerText.includes("How the figure is made")');
+  if (!detail) throw new Error('detail view did not open a FARM row');
   await shot('2-detail.jpg');
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
   await delay(100);
+  await evalJs(`document.querySelector('[data-dep="plan"]').click()`);
+  await delay(80);
   await evalJs(`
+    var row = window.RADAR.rows.find(function (r) { return r.verdict === 'MARGINAL'; });
     var cat = document.getElementById('category');
-    cat.value = 'Risk Curators';
+    cat.value = row.category;
     cat.dispatchEvent(new Event('change'));
   `);
-  await delay(100);
+  await delay(80);
   await evalJs(`
-    var chain = document.getElementById('chain');
-    chain.value = 'Base';
-    chain.dispatchEvent(new Event('change'));
+    var verdict = document.getElementById('verdict');
+    verdict.value = 'MARGINAL';
+    verdict.dispatchEvent(new Event('change'));
   `);
+  await delay(80);
+  await evalJs(`document.querySelector('.expand').click()`);
   await delay(150);
-  const filtered = await evalJs('document.body.innerText.includes("Risk Curators") && document.body.innerText.includes("Base") && document.body.innerText.includes("Clear")');
-  if (!filtered) throw new Error('filtered view did not show the chips');
+  const filtered = await evalJs('document.body.innerText.includes("MARGINAL") && document.body.innerText.includes("of 203") && document.body.innerText.includes("Cost") && document.body.innerText.includes("×")');
+  if (!filtered) throw new Error('filtered view did not show chips, the count, and expanded steps');
   await shot('3-filtered.jpg');
 
   await evalJs(`document.querySelector('[data-tab="evidence"]').click()`);
   await delay(250);
-  const evidence = await evalJs('document.body.innerText.includes("Market cap against TVL") && document.body.innerText.includes("Not kept")');
+  const evidence = await evalJs('document.body.innerText.includes("Market cap against TVL") && document.body.innerText.includes("years with no token")');
   if (!evidence) throw new Error('evidence tab did not render');
   await shot('4-evidence.jpg');
 } finally {

@@ -1,9 +1,10 @@
 // Token radar value model. Every figure comes from the snapshot: no name is special-cased.
 //
-// implied_value_usd = round(exp(a + b × (log(tvl) − center)))
+// launch = exp(a + b × (log(tvl) − center)) × carry(change_7d)
+// implied_value_usd = round(launch × P(years with no token, 7-day band, TVL band, category))
 //
-// a and b are fit on protocols whose token already trades. Family, growth and age are added only
-// when both held-out checks improve. The ranked board is only protocols that record no token.
+// a and b are the held-out log-log fit on tokens that already trade. The carry is one more week of
+// 7-day change, net of the snapshot median, clamped to ±25%. Rank follows the product.
 
 import { buildHeldout, type Evidence, type OddsScore } from './heldout.ts';
 import type { Snapshot, SnapshotProtocol } from './types.ts';
@@ -11,7 +12,7 @@ import type { Snapshot, SnapshotProtocol } from './types.ts';
 export type { Snapshot, SnapshotProtocol } from './types.ts';
 export { parseSnapshot, SnapshotError } from './types.ts';
 
-export const MODEL_VERSION = 'heldout-1';
+export const MODEL_VERSION = 'heldout-2';
 
 export const MIN_CATEGORY_SAMPLE = 5;
 export const GROWTH_FLOOR = -30;
@@ -66,21 +67,21 @@ export const GAS_DEFAULT_CENTS = 80;
 /** Capital charge used to size a farm plan. 4% a year of the deposit, pro-rated by the hold. */
 export const CAPITAL_APR = 0.04;
 
+export const CARRY_CAP = 0.25;
+export const DROP_SHARE = 0.07;
+export const FARM_PER_HOUR = 25;
+
 export const METHOD = {
   thesis:
-    'Implied value is the market cap a log-log fit assigns from TVL. The fit uses only protocols whose token already trades. A term stays in only when it lowers both held-out misses: leave-one-out, and a walk-forward split on the listing date.',
+    'Implied value is what the position is worth if a token launches, times the chance it launches. The launch value is a log-log TVL fit, times one more week of 7-day change net of the snapshot median. The chance uses years with no token, the 7-day growth band, the TVL band and the category.',
   formula:
-    'log(mcap) = a + b × (log(TVL) − center). implied_value_usd = round(exp of that). Low and high are the fit plus the 25th and 75th in-sample residual.',
-  kept:
-    'log(TVL) is kept. Family effects, 7-day growth and age were tested on top of it and were not kept. Each one failed to lower both held-out median misses. The Evidence tab lists the four numbers for every term.',
+    'launch = exp(a + b × (ln TVL − center)) × (1 + clamp((change_7d − median_7d) / 100, −25%, 25%)). implied = round(launch × P). P is shrunk from category × years × 7-day × TVL toward the coarser cells, strength 8.',
   baseline:
-    'The plain comparison is TVL times the category median of mcap/TVL. A category with fewer than 5 traded tokens uses its playbook-family median, then the global median. That model is the held-out baseline. It is not the rank.',
+    'The flat comparison fixes the elasticity at 1, so market cap moves one-for-one with TVL. Leave-one-out miss of the fitted slope is reported next to that flat miss.',
   odds:
-    'P(token) is a smoothed rate from this snapshot. The cell is category, age band and TVL band, shrunk toward family × age × TVL, then family, then the global rate, with strength 8. The score is a held-out half: even and odd slugs, sorted. The page shows the model with the lower Brier score against the base rate, and its AUC.',
-  tiers:
-    'HIGH means P(token) at least 0.50. MED means at least 0.25. LOW is the rest. Expected value is implied value times P(token). Rank follows implied value.',
+    'P(token) is fit on this snapshot. A protocol records a token when gecko_id or symbol is set. The held-out half is even and odd slugs. Each added term reports its own Brier and AUC on that half.',
   farm:
-    'Deposit is the TVL-tier probe, or more if that is what it takes to keep gas at or under 2% of the deposit. Fees are a one-time rate by protocol type. The capital charge is 4% a year times the hold. Net is minus gas, fees and the charge. FARM: P(token) at least 0.45 and break-even at most 5%. MARGINAL: P(token) at least 0.25 and break-even at most 8%. Otherwise SKIP.',
+    'Modelled drop = implied value × drop share × deposit / (TVL + deposit). Net = drop − gas − fees − a 4% T-bill over the hold. Net per hour divides by the minutes the plan names, not by the days the capital sits. FARM: net above zero and at least $25 an hour. MARGINAL: net above zero. SKIP: net at or below zero.',
   separation:
     'A protocol records no token when gecko_id and symbol are both null. Only those rows are ranked. A positive mcap_usd is a comparable: the token already trades, and it is not ranked.',
   exclusions:
@@ -88,8 +89,8 @@ export const METHOD = {
   caveats: [
     'DefiLlama’s record is not proof that a token does or does not exist.',
     'Implied value is this radar’s claim from the snapshot. It is not a price, a promise or financial advice.',
-    'The held-out miss is still a few times the traded market cap. The band on each row is that uncertainty.',
-    'Farm net is the cash cost of the plan. It does not add an airdrop payoff.',
+    'The p25–p75 band is the residual of the TVL fit, carried through the same 7-day factor and the same odds.',
+    'The drop is a modelled share of that implied value, not a quoted airdrop.',
   ],
 } as const;
 
@@ -180,8 +181,14 @@ export interface BoardRow {
   size_factor: number;
   /** Natural log of the fitted market cap. The page recomputes round(exp(this)). */
   log_implied: number;
+  launch_value_usd: number;
+  carry: number;
   /** TVL times the plain category, family or global median. Not the rank. */
   plain_value_usd: number;
+  rank_lo: number;
+  rank_hi: number;
+  work_minutes: number;
+  drop_usd: number;
   p_token: number;
   odds_tier: 'HIGH' | 'MED' | 'LOW';
   odds_level: string;
@@ -254,6 +261,7 @@ export interface RadarData {
   odds: OddsScore;
   ledger: LedgerSegment[];
   verdicts: { FARM: number; MARGINAL: number; SKIP: number };
+  median_change_7d: number;
 }
 
 const DAY_MS = 86_400_000;
@@ -397,9 +405,58 @@ export function feeRate(play: Playbook): number {
   }
 }
 
-export function farmVerdict(pToken: number, breakeven: number): 'FARM' | 'MARGINAL' | 'SKIP' {
-  if (pToken >= 0.45 && breakeven <= 0.05) return 'FARM';
-  if (pToken >= 0.25 && breakeven <= 0.08) return 'MARGINAL';
+export function carryFactor(change: number | null, median: number): number {
+  if (change === null || !Number.isFinite(change)) return 1;
+  let excess = (change - median) / 100;
+  if (excess > CARRY_CAP) excess = CARRY_CAP;
+  if (excess < -CARRY_CAP) excess = -CARRY_CAP;
+  return 1 + excess;
+}
+
+export function medianChange(values: readonly (number | null)[]): number {
+  const xs: number[] = [];
+  for (const value of values) {
+    if (value !== null && Number.isFinite(value)) xs.push(value);
+  }
+  xs.sort((a, b) => a - b);
+  return xs.length === 0 ? 0 : percentile(xs, 0.5);
+}
+
+export interface PositionNet {
+  drop_usd: number;
+  fee_usd: number;
+  capital_charge_usd: number;
+  net_usd: number;
+  per_hour_usd: number;
+}
+
+export function positionNet(
+  implied: number,
+  tvl: number,
+  deposit: number,
+  share: number,
+  gas: number,
+  feeRateValue: number,
+  hold: number,
+  workMinutesValue: number,
+): PositionNet {
+  const drop = implied * share * deposit / (tvl + deposit);
+  const fee = deposit * feeRateValue;
+  const charge = (deposit * CAPITAL_APR * hold) / 365;
+  const net = drop - gas - fee - charge;
+  const perHour = workMinutesValue > 0 ? net / (workMinutesValue / 60) : 0;
+  return {
+    drop_usd: round2(drop),
+    fee_usd: round2(fee),
+    capital_charge_usd: round2(charge),
+    net_usd: round2(net),
+    per_hour_usd: round2(perHour),
+  };
+}
+
+export function farmVerdict(net: number, perHour: number): 'FARM' | 'MARGINAL' | 'SKIP' {
+  if (net > 0 && perHour >= FARM_PER_HOUR) return 'FARM';
+  if (net > 0) return 'MARGINAL';
   return 'SKIP';
 }
 
@@ -472,17 +529,9 @@ function formatCompact(n: number): string {
 }
 
 function ageClause(age: number | null, hold: number): string {
-  if (age === null) return `The listed date is missing, so the maturity factor stays neutral and the hold is ${hold} days.`;
-  if (age < 180) {
-    return `It has been listed ${age} days and records no token, still under 6 months, so the hold is ${hold} days to build a record before the usual token window.`;
-  }
-  if (age < 540) {
-    return `It has been listed ${age} days and records no token, inside the 6 to 18 month window, so the hold is ${hold} days.`;
-  }
-  if (age < 1095) {
-    return `It has been listed ${age} days and records no token, past 18 months, so the hold is the shorter ${hold} days.`;
-  }
-  return `It has been listed ${age} days and records no token, past 3 years, when a token is less likely, so the hold is ${hold} days.`;
+  if (age === null) return `The listed date is missing, so the years-with-no-token band is unknown and the hold is ${hold} days.`;
+  const years = (age / 365).toFixed(1);
+  return `It has been listed ${age} days (${years} years) and records no token, so the hold is ${hold} days.`;
 }
 
 function chainNote(chains: readonly string[]): string {
@@ -548,6 +597,36 @@ function reviewMinutes(hold: number, tvl: number): number {
   let minutes = 6 + Math.round(hold / 15);
   if (tvl >= 250_000_000) minutes += 4;
   return Math.min(25, minutes);
+}
+
+function workMinutes(play: Playbook, tvl: number, hold: number): number {
+  const setup = setupMinutes(tvl, hold);
+  const weeks = weeksOf(hold);
+  const safety = Math.max(5, Math.round(setup / 3));
+  const follow = Math.max(8, Math.round(setup * 0.6));
+  const log = 5 + weeks;
+  const weekly = reviewMinutes(hold, tvl) * weeks;
+  const close = Math.max(8, Math.round(setup * 0.5));
+  switch (play) {
+    case 'lending':
+    case 'perps':
+      return safety + setup + follow + weekly + close + log;
+    case 'dex':
+    case 'bridge':
+    case 'rwa':
+      return safety + setup + follow + weekly + log;
+    case 'launchpad':
+    case 'other':
+      return safety + setup + log;
+    case 'yield':
+    case 'staking':
+    case 'basis':
+    case 'prediction':
+    case 'insurance':
+      return safety + setup + follow + log;
+    default:
+      return assertNever(play);
+  }
 }
 
 interface FarmContext {
@@ -782,6 +861,7 @@ export interface FarmPlan {
   per_hour_usd: number;
   breakeven: number;
   min_deposit_usd: number;
+  work_minutes: number;
 }
 
 export function farmPlan(p: SnapshotProtocol, age: number | null): FarmPlan {
@@ -885,6 +965,7 @@ export function farmPlan(p: SnapshotProtocol, age: number | null): FarmPlan {
     per_hour_usd: perHour,
     breakeven,
     min_deposit_usd: minDeposit,
+    work_minutes: workMinutes(play, p.tvl_usd, hold),
   };
 }
 
@@ -1087,13 +1168,13 @@ export function categoryMultipleTable(protocols: readonly SnapshotProtocol[], gl
 function riskFlags(p: SnapshotProtocol, age: number | null, stats: MultipleStats): string[] {
   const flags: string[] = [];
   if (p.change_7d !== null && p.change_7d <= -20) {
-    flags.push(`7-day TVL change is ${p.change_7d.toFixed(1)}%, a sharp drop. Growth was tested and not kept in the value fit.`);
+    flags.push(`7-day TVL change is ${p.change_7d.toFixed(1)}%, a sharp drop. The carry uses that week net of the snapshot median.`);
   }
   if (age !== null && age < 90) flags.push(`Listed ${age} days ago.`);
   else if (age !== null && age >= 1095) flags.push(`Listed ${age} days ago, past three years.`);
   if (p.chains.length <= 1) flags.push('Deployed on one chain in this snapshot.');
   if (stats.sample < MIN_CATEGORY_SAMPLE) {
-    flags.push(`Category has ${stats.sample} traded comparables. The plain median would use the ${stats.source} source. The rank uses the log-log fit, not that median.`);
+    flags.push(`Category has ${stats.sample} traded comparables. Odds for a thin category shrink toward the coarser cells.`);
   }
   if (stats.token_share < 0.25) {
     const pct = Math.round(stats.token_share * 100);
@@ -1140,6 +1221,13 @@ function bySlug(a: string, b: string): number {
   return 0;
 }
 
+function mix32(n: number): number {
+  let x = n >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
+  x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
+  return (x ^ (x >>> 16)) >>> 0;
+}
+
 export function buildBoard(snapshot: Snapshot): BoardRow[] {
   const held = buildHeldout(snapshot.protocols, snapshot.as_of, { playbookOf, ageDays, isComparable, isPreToken });
   return scoreBoard(snapshot, held);
@@ -1177,6 +1265,7 @@ function scoreBoard(snapshot: Snapshot, held: ReturnType<typeof buildHeldout>): 
   extras.sort((a, b) => b.tvl_usd - a.tvl_usd || bySlug(a.slug, b.slug));
   for (const p of extras) chosen.push(p);
 
+  const median7 = medianChange(snapshot.protocols.map((p) => p.change_7d));
   const scored = chosen.map((p) => {
     const category = p.category ?? 'Uncategorized';
     const stats = byCategory.get(category) ?? fallback;
@@ -1187,12 +1276,15 @@ function scoreBoard(snapshot: Snapshot, held: ReturnType<typeof buildHeldout>): 
     const size = sizeFactor(p.tvl_usd);
     const log = held.logMcap(p);
     if (log === null) throw new Error(`token radar: no fitted value for ${p.slug}`);
-    const implied = clampValue(Math.exp(log));
-    const low = clampValue(Math.exp(log + held.evidence.residual_p25));
-    const high = clampValue(Math.exp(log + held.evidence.residual_p75));
-    const farm = farmPlan(p, age);
+    const carry = carryFactor(p.change_7d, median7);
     const odds = held.oddsFor(p);
-    const verdict = farmVerdict(odds.p, farm.breakeven);
+    const launch = Math.exp(log) * carry;
+    const implied = clampValue(launch * odds.p);
+    const low = clampValue(Math.exp(log + held.evidence.residual_p25) * carry * odds.p);
+    const high = clampValue(Math.exp(log + held.evidence.residual_p75) * carry * odds.p);
+    const farm = farmPlan(p, age);
+    const money = positionNet(implied, p.tvl_usd, farm.deposit_usd, DROP_SHARE, farm.gas_total_usd, farm.fee_rate, farm.hold_days, farm.work_minutes);
+    const verdict = farmVerdict(money.net_usd, money.per_hour_usd);
     const plain = clampValue(p.tvl_usd * stats.multiple);
     return {
       p,
@@ -1204,6 +1296,8 @@ function scoreBoard(snapshot: Snapshot, held: ReturnType<typeof buildHeldout>): 
       breadth,
       size,
       log,
+      carry,
+      launch: clampValue(launch),
       implied,
       low: Math.min(low, implied),
       high: Math.max(high, implied),
@@ -1211,7 +1305,28 @@ function scoreBoard(snapshot: Snapshot, held: ReturnType<typeof buildHeldout>): 
       odds,
       verdict,
       plain,
+      money,
+      rankLo: 1,
+      rankHi: 1,
     };
+  });
+  const residuals = held.evidence.residuals;
+  const samples = scored.map(() => [] as number[]);
+  if (residuals.length > 0) {
+    const draws = 80;
+    for (let b = 0; b < draws; b += 1) {
+      const vals = scored.map((s, i) => {
+        const draw = residuals[mix32(b * 100003 + i * 97) % residuals.length]!;
+        return clampValue(Math.exp(s.log + draw) * s.carry * s.odds.p);
+      });
+      const order = vals.map((_, i) => i).sort((i, j) => vals[j]! - vals[i]! || bySlug(scored[i]!.p.slug, scored[j]!.p.slug));
+      order.forEach((idx, rank) => samples[idx]!.push(rank + 1));
+    }
+  }
+  scored.forEach((s, i) => {
+    const sample = samples[i]!.slice().sort((a, b) => a - b);
+    s.rankLo = sample.length === 0 ? 1 : Math.round(percentile(sample, 0.25));
+    s.rankHi = sample.length === 0 ? 1 : Math.round(percentile(sample, 0.75));
   });
   scored.sort((a, b) => b.implied - a.implied || bySlug(a.p.slug, b.p.slug));
   return scored.map((s, i) => ({
@@ -1246,19 +1361,25 @@ function scoreBoard(snapshot: Snapshot, held: ReturnType<typeof buildHeldout>): 
     breadth_factor: s.breadth,
     size_factor: s.size,
     log_implied: s.log,
+    launch_value_usd: s.launch,
+    carry: s.carry,
     plain_value_usd: s.plain,
+    rank_lo: Math.min(s.rankLo, i + 1),
+    rank_hi: Math.max(s.rankHi, i + 1),
+    work_minutes: s.farm.work_minutes,
+    drop_usd: s.money.drop_usd,
     p_token: s.odds.p,
     odds_tier: s.odds.tier,
     odds_level: s.odds.level,
     odds_cell: s.odds.cell,
-    expected_value_usd: clampValue(s.implied * s.odds.p),
+    expected_value_usd: s.implied,
     verdict: s.verdict,
     deposit_usd: s.farm.deposit_usd,
-    fee_usd: s.farm.fee_usd,
+    fee_usd: s.money.fee_usd,
     fee_rate: s.farm.fee_rate,
-    capital_charge_usd: s.farm.capital_charge_usd,
-    net_usd: s.farm.net_usd,
-    per_hour_usd: s.farm.per_hour_usd,
+    capital_charge_usd: s.money.capital_charge_usd,
+    net_usd: s.money.net_usd,
+    per_hour_usd: s.money.per_hour_usd,
     breakeven: s.farm.breakeven,
     min_deposit_usd: s.farm.min_deposit_usd,
     capital_usd: s.farm.capital_usd,
@@ -1306,11 +1427,12 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   if (ledgerSum !== snapshot.protocols.length) {
     throw new Error(`token radar: ledger sums to ${ledgerSum}, snapshot has ${snapshot.protocols.length}`);
   }
+  const median7 = medianChange(snapshot.protocols.map((row) => row.change_7d));
   const verdicts = { FARM: 0, MARGINAL: 0, SKIP: 0 };
   for (const row of board) {
     verdicts[row.verdict] += 1;
-    const again = clampValue(Math.exp(row.log_implied));
-    if (again !== row.implied_value_usd) throw new Error(`token radar: ${row.slug} log does not match implied value`);
+    const again = clampValue(Math.exp(row.log_implied) * row.carry * row.p_token);
+    if (again !== row.implied_value_usd) throw new Error(`token radar: ${row.slug} figure does not match implied value`);
   }
   const radar: RadarData = {
     as_of: snapshot.as_of,
@@ -1345,6 +1467,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     odds: held.odds,
     ledger,
     verdicts,
+    median_change_7d: median7,
   };
   return { board, radar };
 }
