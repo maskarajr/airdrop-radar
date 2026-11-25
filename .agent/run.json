@@ -2,7 +2,7 @@
   "harness": "cursor-cloud-agent",
   "harness_version": "2026-11-23",
   "provider": "xai",
-  "model": "grok-4.7",
+  "model": "cursor-grok-4.6",
   "effort": "default",
-  "mcp_servers": []
+  "mcp_servers": ["cursor-cloud"]
 }
