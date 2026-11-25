@@ -104,10 +104,14 @@ try {
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
   await delay(150);
+  const boardOk = await evalJs(`({
+    tenk: document.querySelector('[data-dep="10000"]') && document.querySelector('[data-dep="10000"]').getAttribute('aria-pressed') === 'true',
+    farm: document.body.innerText.indexOf('FARM') >= 0,
+    rows: document.querySelectorAll('table.board tbody tr.row').length
+  })`);
+  if (!boardOk || !boardOk.tenk || !boardOk.farm || boardOk.rows < 10) throw new Error('board default view failed: ' + JSON.stringify(boardOk));
   await shot('1-board.jpg');
 
-  await evalJs(`document.querySelector('[data-dep="10000"]').click()`);
-  await delay(100);
   await evalJs(`location.hash = 'metalx-swap'`);
   await delay(200);
   const detail = await evalJs('document.body.innerText.includes("MetalX") && document.body.innerText.includes("FARM") && document.body.innerText.includes("Cost") && document.body.innerText.includes("How the figure is made")');
@@ -115,26 +119,35 @@ try {
   await shot('2-detail.jpg');
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
-  await delay(100);
-  await evalJs(`document.querySelector('[data-dep="plan"]').click()`);
-  await delay(80);
+  await delay(120);
   await evalJs(`
-    var row = window.RADAR.rows.find(function (r) { return r.verdict === 'MARGINAL'; });
     var cat = document.getElementById('category');
-    cat.value = row.category;
+    cat.value = 'Dexs';
     cat.dispatchEvent(new Event('change'));
   `);
   await delay(80);
   await evalJs(`
-    var verdict = document.getElementById('verdict');
-    verdict.value = 'MARGINAL';
-    verdict.dispatchEvent(new Event('change'));
+    var buttons = document.querySelectorAll('.th-sort');
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].textContent.indexOf('TVL') === 0) { buttons[i].click(); break; }
+    }
   `);
   await delay(80);
-  await evalJs(`document.querySelector('.expand').click()`);
+  await evalJs(`document.querySelector('table.board tbody tr.row td.pick input').click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row td.pick input')[1].click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row td.pick input')[2].click()`);
   await delay(150);
-  const filtered = await evalJs('document.body.innerText.includes("MARGINAL") && document.body.innerText.includes("of 203") && document.body.innerText.includes("Cost") && document.body.innerText.includes("×")');
-  if (!filtered) throw new Error('filtered view did not show chips, the count, and expanded steps');
+  const filtered = await evalJs(`({
+    chip: document.body.innerText.indexOf('Dexs') >= 0 && document.body.innerText.indexOf('×') >= 0,
+    count: document.body.innerText.indexOf('of 203') >= 0,
+    arrow: !!(document.querySelector('th.sorted .th-sort') && /[↑↓]/.test(document.querySelector('th.sorted .th-sort').textContent)),
+    compare: !!(document.getElementById('compare') && document.querySelectorAll('.cmp thead th').length >= 3)
+  })`);
+  if (!filtered || !filtered.chip || !filtered.count || !filtered.arrow || !filtered.compare) {
+    throw new Error('filtered view failed: ' + JSON.stringify(filtered));
+  }
   await shot('3-filtered.jpg');
 
   await evalJs(`document.querySelector('[data-tab="evidence"]').click()`);

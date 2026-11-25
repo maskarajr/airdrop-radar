@@ -13,7 +13,7 @@
     share: DEFAULT_SHARE,
     open: '',
     watch: false,
-    sort: { key: 'rank', dir: 1 },
+    sort: { key: 'hour', dir: -1 },
     compare: [],
   };
   var PILL = { FARM: 'v-farm', MARGINAL: 'v-mid', SKIP: 'v-no' };
@@ -583,7 +583,6 @@
     });
     var emptyWhy = 'No row matches these filters. Clear a chip or widen the search.';
     return h('div', { id: 'main' }, [
-      farmNext(),
       controls(rows.length),
       h('p', { class: 'tally', text: 'FARM ' + tally.FARM + ' · MARGINAL ' + tally.MARGINAL + ' · SKIP ' + tally.SKIP }),
       compareTray(),
@@ -776,12 +775,16 @@
 
   function evidence() {
     return h('div', { id: 'main' }, [
+      formulaLine(),
+      h('p', { class: 'muted', text: DATA.method.odds }),
+      ledger(),
+      termTable(),
+      integrity(),
       h('section', { class: 'chart-card' }, [
         h('h2', { text: 'Market cap against TVL' }),
         h('p', { class: 'muted', text: DATA.evidence.comparable_count + ' traded tokens. Slope ' + DATA.evidence.line.slope.toFixed(2) + '. The band is the 25th to 75th residual.' }),
         scatter(),
       ]),
-      termTable(),
     ]);
   }
 
@@ -799,7 +802,7 @@
     if (row) page = detail(row);
     else if (hash === 'evidence') page = evidence();
     else if (hash === 'comps') page = comps();
-    else page = h('div', null, [stats(), formulaLine(), ledger(), termTable(), integrity(), board()]);
+    else page = h('div', null, [stats(), farmNext(), board()]);
     var y = window.scrollY;
     app.replaceChildren(h('div', { class: 'wrap' }, [header(), tabs(), page]));
     window.scrollTo(0, y);
