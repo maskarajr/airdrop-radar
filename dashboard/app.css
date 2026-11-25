@@ -77,8 +77,8 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: mid
 .board th:nth-child(8) { width: 96px; }
 .board th:nth-child(9) { width: 148px; }
 .board th:nth-child(10) { width: 110px; }
-.board th:nth-child(11) { width: 84px; }
-.th-sort { color: inherit; font: inherit; text-align: inherit; width: 100%; }
+.board th:nth-child(11) { width: 96px; white-space: nowrap; }
+.th-sort { color: inherit; font: inherit; text-align: inherit; width: 100%; white-space: nowrap; }
 th.sorted .th-sort { color: var(--accent); }
 .tally { margin: 0 0 8px; color: var(--secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
 .toggle { color: var(--secondary); font-size: 13px; }
@@ -143,7 +143,7 @@ dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .grid3 td, .grid3 th { text-align: right; }
 .grid3 td.on { outline: 1px solid var(--accent); }
 .chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 12px; }
-svg.chart { display: block; width: 100%; height: auto; max-height: 360px; }
+svg.chart { display: block; width: 100%; height: auto; }
 svg.chart text { fill: #9a9a9a; font-family: var(--sans); font-size: 11px; }
 .chart .grid { stroke: #2a2a2a; stroke-width: 1; }
 .chart .dot { fill: #9a9a9a; }
@@ -155,11 +155,13 @@ svg.chart text { fill: #9a9a9a; font-family: var(--sans); font-size: 11px; }
 caption.fn { text-align: left; caption-side: top; padding: 0 8px 4px; }
 .when { display: inline-block; min-width: 72px; margin-right: 8px; color: var(--accent); font-family: var(--mono); font-size: 11px; }
 .steps { list-style: none; margin: 0; padding: 0; }
-.iv { margin: 4px 0 0; font-size: 32px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; }
+.iv { margin: 4px 0 0; font-size: 28px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; }
 .rk { margin: 2px 0 8px; color: var(--secondary); font-size: 14px; }
 .verdict-line { margin: 0 0 8px; color: var(--secondary); font-size: 14px; }
 .span2 { grid-column: 1 / -1; }
 .chart .mark { fill: var(--accent); stroke: #141414; stroke-width: 1; }
 .tickwrap { margin-top: 8px; }
 .stats { font-variant-numeric: tabular-nums; }
-.plan-panel { margin: 0 0 12px; }
+.plan-panel { margin: 0; }
+.detail-top { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 12px; margin: 0 0 12px; align-items: start; }
+.evidence-line { margin: 0 0 8px; color: var(--secondary); font-size: 13px; font-variant-numeric: tabular-nums; font-family: var(--mono); }

@@ -117,8 +117,16 @@ try {
 
   await evalJs(`location.hash = 'metalx-swap'`);
   await delay(250);
-  const detail = await evalJs('document.body.innerText.includes("MetalX") && document.body.innerText.includes("FARM") && document.body.innerText.includes("LP $10.0k") && document.body.innerText.includes("What moves the value") && document.body.innerText.includes("impliedValue()")');
-  if (!detail) throw new Error('detail view did not open a FARM row at $10k');
+  const detail = await evalJs(`({
+    name: document.body.innerText.includes("MetalX"),
+    farm: document.body.innerText.includes("FARM"),
+    plan: document.body.innerText.includes("$10,000") || document.body.innerText.includes("$10.0k"),
+    scatter: !!document.querySelector('svg.chart .mark'),
+    axes: document.body.innerText.includes("TVL vs market cap")
+  })`);
+  if (!detail || !detail.name || !detail.farm || !detail.plan || !detail.scatter || !detail.axes) {
+    throw new Error('detail view failed: ' + JSON.stringify(detail));
+  }
   await shot('2-detail.jpg');
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
@@ -142,16 +150,21 @@ try {
   await delay(80);
   await evalJs(`document.querySelectorAll('table.board tbody tr.row td.pick input')[2].click()`);
   await delay(80);
-  await evalJs(`document.querySelector('table.board tbody tr.row .expand').click()`);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row .expand')[0].click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row .expand')[1].click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row .expand')[2].click()`);
   await delay(150);
   const filtered = await evalJs(`({
     chip: document.body.innerText.indexOf('FARM') >= 0 && document.body.innerText.indexOf('×') >= 0,
     count: document.body.innerText.indexOf('of 203') >= 0,
     arrow: !!(document.querySelector('th.sorted .th-sort') && /Net\\/hour/.test(document.querySelector('th.sorted .th-sort').textContent) && /[↑↓]/.test(document.querySelector('th.sorted .th-sort').textContent)),
     compare: !!(document.getElementById('compare') && document.querySelectorAll('.cmp thead th').length >= 3),
-    steps: document.body.innerText.indexOf('All in:') >= 0 && document.body.innerText.indexOf('WHEN') < 0 && document.body.innerText.indexOf('Day 0') >= 0
+    steps: document.body.innerText.indexOf('All in:') >= 0 && document.querySelectorAll('table.board tbody tr.expanded').length >= 3,
+    tight: document.body.innerText.indexOf('All 758 protocols') < 0
   })`);
-  if (!filtered || !filtered.chip || !filtered.count || !filtered.arrow || !filtered.compare || !filtered.steps) {
+  if (!filtered || !filtered.chip || !filtered.count || !filtered.arrow || !filtered.compare || !filtered.steps || !filtered.tight) {
     throw new Error('filtered view failed: ' + JSON.stringify(filtered));
   }
   await shot('3-filtered.jpg');
