@@ -897,7 +897,7 @@
       var ev = DATA.evidence;
       var line = h('p', { class: 'evidence-line', text: times(ev.heldout.loo_median) + ' vs ' + times(ev.flat.median) + ' flat · Brier ' + DATA.odds.brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) + ' · Watchlist 40/40 · 203/203 recomputed' });
       page = tight
-        ? h('div', null, [line, farmNext(), board()])
+        ? h('div', null, [line, board()])
         : h('div', null, [stats(), ledger(), integrity(), termTable(), farmNext(), board()]);
     }
     var y = window.scrollY;

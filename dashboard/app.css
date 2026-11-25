@@ -122,7 +122,8 @@ input, select { background: var(--surface); border: 1px solid var(--line); borde
 .pill.v-no { background: var(--skip-bg); color: var(--skip-fg); }
 .expand { color: var(--muted); font-size: 12px; }
 .expanded td { background: #191919; }
-.step { padding: 4px 0; border-top: 1px solid var(--line); }
+.step { padding: 3px 0; border-top: 1px solid var(--line); }
+.step p { font-size: 12px; }
 .step p { margin: 0; font-size: 13px; line-height: 1.45; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .mini { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #2a2a2a; color: var(--secondary); white-space: nowrap; }
