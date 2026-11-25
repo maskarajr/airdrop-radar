@@ -319,7 +319,7 @@
     var checks = [
       [ranks, 'Ranks 1–' + rows.length],
       [order, 'Values never rise'],
-      [watch === DATA.watchlist.length && DATA.watchlist.length === 40, 'Watchlist ' + watch + '/' + DATA.watchlist.length],
+      [watch === DATA.watchlist.length && DATA.watchlist.length === 40, 'Watchlist ' + watch + ' of ' + DATA.watchlist.length],
       [steps, 'Steps 4–8, 20–600 characters'],
       [total === DATA.counts.protocols, 'Ledger ' + total + '/' + DATA.counts.protocols],
       [recomputed === rows.length, 'recomputed ' + recomputed + ' of ' + rows.length],
