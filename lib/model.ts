@@ -70,6 +70,10 @@ export const CAPITAL_APR = 0.04;
 export const CARRY_CAP = 0.25;
 export const DROP_SHARE = 0.07;
 export const FARM_PER_HOUR = 25;
+/** Board opens on this deposit. Plan size, $1k and $10k stay as controls. */
+export const DEFAULT_VIEW_DEPOSIT_USD = 10_000;
+export const VIEW_DEPOSITS_USD = [1_000, 10_000] as const;
+export const DROP_SHARES = [0.035, 0.07, 0.14] as const;
 
 export const METHOD = {
   thesis:
@@ -230,6 +234,8 @@ export interface LedgerSegment {
   count: number;
 }
 
+export type VerdictTally = { FARM: number; MARGINAL: number; SKIP: number };
+
 export interface RadarData {
   as_of: string;
   source: string;
@@ -262,6 +268,9 @@ export interface RadarData {
   ledger: LedgerSegment[];
   verdicts: { FARM: number; MARGINAL: number; SKIP: number };
   median_change_7d: number;
+  default_deposit_usd: number;
+  drop_shares: number[];
+  view_verdicts: VerdictTally;
 }
 
 const DAY_MS = 86_400_000;
@@ -458,6 +467,30 @@ export function farmVerdict(net: number, perHour: number): 'FARM' | 'MARGINAL' |
   if (net > 0 && perHour >= FARM_PER_HOUR) return 'FARM';
   if (net > 0) return 'MARGINAL';
   return 'SKIP';
+}
+
+/** Count FARM / MARGINAL / SKIP at one deposit and drop share. Plan size uses each row's own deposit. */
+export function tallyVerdicts(
+  rows: ReadonlyArray<Pick<BoardRow, 'implied_value_usd' | 'tvl_usd' | 'fee_rate' | 'hold_days' | 'work_minutes' | 'gas_total_usd' | 'deposit_usd'>>,
+  deposit: number | 'plan',
+  share: number,
+): VerdictTally {
+  const tallies: VerdictTally = { FARM: 0, MARGINAL: 0, SKIP: 0 };
+  for (const row of rows) {
+    const amount = deposit === 'plan' ? row.deposit_usd : deposit;
+    const money = positionNet(
+      row.implied_value_usd,
+      row.tvl_usd,
+      amount,
+      share,
+      row.gas_total_usd,
+      row.fee_rate,
+      row.hold_days,
+      row.work_minutes,
+    );
+    tallies[farmVerdict(money.net_usd, money.per_hour_usd)] += 1;
+  }
+  return tallies;
 }
 
 export function playbookOf(category: string | null): Playbook {
@@ -1468,6 +1501,9 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     ledger,
     verdicts,
     median_change_7d: median7,
+    default_deposit_usd: DEFAULT_VIEW_DEPOSIT_USD,
+    drop_shares: [...DROP_SHARES],
+    view_verdicts: tallyVerdicts(board, DEFAULT_VIEW_DEPOSIT_USD, DROP_SHARE),
   };
   return { board, radar };
 }
