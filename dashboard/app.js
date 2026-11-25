@@ -479,7 +479,7 @@
       h('div', { class: 'seg' }, shares.map(function (item) {
         return h('button', { type: 'button', 'data-share': String(item[0]), 'aria-pressed': state.share === item[0] ? 'true' : 'false', text: item[1], onclick: function () { state.share = item[0]; render(); } });
       })),
-      h('input', { id: 'q', type: 'search', placeholder: 'Search name, category, chain', value: state.q, oninput: function (ev) { state.q = ev.target.value; render(); } }),
+      h('input', { id: 'q', type: 'search', placeholder: 'Search', value: state.q, oninput: function (ev) { state.q = ev.target.value; render(); } }),
       h('label', { class: 'toggle' }, [
         h('input', { id: 'watch', type: 'checkbox', checked: state.watch ? 'checked' : null, onchange: function (ev) { state.watch = ev.target.checked; render(); } }),
         ' Watchlist only',
@@ -537,7 +537,7 @@
 
   function board() {
     var rows = filteredRows();
-    var tally = liveTally(DATA.rows);
+    var tally = liveTally(rows);
     var body = [];
     rows.forEach(function (row) {
       var dep = depositOf(row);

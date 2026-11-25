@@ -1226,7 +1226,7 @@ function clampValue(n: number): number {
 }
 
 export function buildLedger(snapshot: Snapshot, boardSlugs: ReadonlySet<string>): LedgerSegment[] {
-  const keys = ['Ranked', 'Already has a token', 'CEX', 'Bridge', 'Liquid staking', 'Wrapper', 'Wrapped or versioned', 'Other'] as const;
+  const keys = ['Ranked', 'Records a token', 'CEX', 'Bridge', 'Liquid staking', 'Wrapper', 'Wrapped or versioned', 'Other'] as const;
   const counts = new Map<string, number>(keys.map((key) => [key, 0]));
   for (const p of snapshot.protocols) {
     if (boardSlugs.has(p.slug)) {
@@ -1234,7 +1234,7 @@ export function buildLedger(snapshot: Snapshot, boardSlugs: ReadonlySet<string>)
       continue;
     }
     if (!isPreToken(p)) {
-      counts.set('Already has a token', (counts.get('Already has a token') ?? 0) + 1);
+      counts.set('Records a token', (counts.get('Records a token') ?? 0) + 1);
       continue;
     }
     const category = p.category;
