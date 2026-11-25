@@ -82,9 +82,9 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: mid
 th.sorted .th-sort { color: var(--accent); }
 .tally { margin: 0 0 8px; color: var(--secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
 .toggle { color: var(--secondary); font-size: 13px; }
-.compare { margin: 8px 0 12px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+.compare { margin: 8px 0 12px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
 .cmp { table-layout: fixed; }
-.cmp th, .cmp td { text-align: right; font-variant-numeric: tabular-nums; }
+.cmp th, .cmp td { text-align: right; font-variant-numeric: tabular-nums; padding: 2px 8px; font-size: 12px; }
 .cmp th:first-child, .cmp td:first-child { text-align: left; width: 120px; }
 .row.picked { background: #222018; }
 .verdict { text-align: right; }
@@ -122,6 +122,7 @@ input, select { background: var(--surface); border: 1px solid var(--line); borde
 .pill.v-no { background: var(--skip-bg); color: var(--skip-fg); }
 .expand { color: var(--muted); font-size: 12px; }
 .expanded td { background: #191919; }
+.expanded .step p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step { padding: 3px 0; border-top: 1px solid var(--line); }
 .step p { font-size: 12px; }
 .step p { margin: 0; font-size: 13px; line-height: 1.45; }
