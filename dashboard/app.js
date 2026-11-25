@@ -11,7 +11,7 @@
     verdict: '',
     deposit: String(DEFAULT_DEP),
     share: DEFAULT_SHARE,
-    open: '',
+    open: {},
     watch: false,
     sort: { key: 'rank', dir: 1 },
     compare: [],
@@ -624,10 +624,10 @@
         h('td', { class: 'num', text: money(econ.perHour) }),
         h('td', { class: 'plan' }, [
           h('div', { text: planLine(row, dep) }),
-          h('button', { type: 'button', class: 'expand', text: state.open === row.slug ? 'Hide steps' : 'Steps', onclick: function () { state.open = state.open === row.slug ? '' : row.slug; render(); } }),
+          h('button', { type: 'button', class: 'expand', text: state.open[row.slug] ? 'Hide steps' : 'Steps', onclick: function () { if (state.open[row.slug]) delete state.open[row.slug]; else state.open[row.slug] = true; render(); } }),
         ]),
       ]));
-      if (state.open === row.slug) {
+      if (state.open[row.slug]) {
         body.push(h('tr', { class: 'expanded' }, [h('td', { colspan: '12' }, [stepList(row, dep)])]));
       }
     });
@@ -893,7 +893,7 @@
     else if (hash === 'evidence') page = evidence();
     else if (hash === 'comps') page = comps();
     else {
-      var tight = !!(state.q.trim() || state.category || state.verdict || state.watch || state.compare.length || state.open || state.sort.key !== 'rank');
+      var tight = !!(state.q.trim() || state.category || state.verdict || state.watch || state.compare.length || Object.keys(state.open).length || state.sort.key !== 'rank');
       var ev = DATA.evidence;
       var line = h('p', { class: 'evidence-line', text: times(ev.heldout.loo_median) + ' vs ' + times(ev.flat.median) + ' flat · Brier ' + DATA.odds.brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) + ' · Watchlist 40/40 · 203/203 recomputed' });
       page = tight
