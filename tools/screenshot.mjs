@@ -84,9 +84,9 @@ try {
     return result.result?.value;
   }
   async function shot(name) {
-    let quality = 88;
+    let quality = 95;
     let bytes = Buffer.alloc(0);
-    for (; quality >= 48; quality -= 4) {
+    for (; quality >= 72; quality -= 3) {
       const image = await send('Page.captureScreenshot', { format: 'jpeg', quality, fromSurface: true });
       bytes = Buffer.from(image.data, 'base64');
       if (bytes.length <= 340_000) break;

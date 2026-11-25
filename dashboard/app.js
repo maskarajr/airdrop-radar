@@ -292,7 +292,8 @@
     var odds = h('table', null, [
       h('thead', null, [h('tr', null, [h('th', { text: 'Launch odds, added in order' }), h('th', { class: 'num', text: 'Brier' }), h('th', { class: 'num', text: 'AUC' })])]),
       h('tbody', null,       ev.odds_terms.map(function (term, i) {
-        var mark = i === 0 ? 'baseline' : 'kept';
+        var prev = i === 0 ? term.brier : ev.odds_terms[i - 1].brier;
+        var mark = i === 0 ? 'baseline' : (term.brier <= prev ? 'kept' : 'tested · nested');
         return h('tr', null, [h('td', { text: term.term + ' · ' + mark }), h('td', { class: 'num', text: term.brier.toFixed(3) }), h('td', { class: 'num', text: term.auc.toFixed(3) })]);
       })),
     ]);
@@ -613,11 +614,7 @@
         h('td', { class: 'num', text: ageText(row.age_days) }),
         h('td', { class: 'num' }, [oddsBar(row.p_token)]),
         h('td', { class: 'num', text: money(row.launch_value_usd) }),
-        h('td', { class: 'num range-cell' }, [
-          h('span', { text: money(row.implied_value_usd) }),
-          rangeBar(row),
-          h('span', { class: 'band', text: money(row.low_value_usd) + '–' + money(row.high_value_usd) }),
-        ]),
+        h('td', { class: 'num nowrap', text: money(row.implied_value_usd) + '  ' + money(row.low_value_usd) + '–' + money(row.high_value_usd) }),
         h('td', { class: 'verdict' }, [pill(verdict), h('div', { class: 'band', text: money(econ.net) })]),
         h('td', { class: 'num', text: money(econ.perHour) }),
         h('td', { class: 'plan' }, [
@@ -711,6 +708,10 @@
           ' · ' + ageText(row.age_days) + ' with no token · deposit ' + money(dep),
         ]),
       ]),
+      h('section', { class: 'panel plan-panel' }, [
+        h('h3', null, ['Plan ', fn('farmPlan()')]),
+        stepList(row, dep),
+      ]),
       h('div', { class: 'detail-grid' }, [
         h('section', { class: 'panel' }, [
           h('h3', null, ['How the figure is made ', fn('impliedValue()')]),
@@ -760,14 +761,10 @@
             ]),
           ]),
         ]),
-        h('section', { class: 'panel span2' }, [
+        h('section', { class: 'panel' }, [
           h('h3', { text: 'TVL vs market cap' }),
           scatter(row),
         ]),
-      ]),
-      h('section', { class: 'panel', style: 'margin-top:12px' }, [
-        h('h3', null, ['Plan ', fn('farmPlan()')]),
-        stepList(row, dep),
       ]),
     ]);
   }
@@ -783,7 +780,7 @@
   function scatter(mark) {
     var ev = DATA.evidence;
     var W = 820;
-    var H = 480;
+    var H = mark ? 280 : 400;
     var L = 52;
     var R = 16;
     var T = 12;
@@ -799,6 +796,12 @@
       y0 = Math.min(y0, p.y, lineY(p.x) + ev.band.low);
       y1 = Math.max(y1, p.y, lineY(p.x) + ev.band.high);
     });
+    if (mark) {
+      var mx0 = Math.log10(mark.tvl_usd);
+      var my0 = Math.log10(Math.max(1, mark.launch_value_usd));
+      x0 = Math.min(x0, mx0); x1 = Math.max(x1, mx0);
+      y0 = Math.min(y0, my0); y1 = Math.max(y1, my0);
+    }
     x0 -= 0.12; x1 += 0.12;
     var pad = (y1 - y0) * 0.08;
     y0 -= pad; y1 += pad;
