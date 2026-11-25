@@ -470,6 +470,11 @@ export function farmVerdict(net: number, perHour: number): 'FARM' | 'MARGINAL' |
   return 'SKIP';
 }
 
+/** TVL that fires the plan's exit: 30% below the snapshot print. Display-only; not a rank input. */
+export function exitTriggerTvl(tvl: number): number {
+  return Math.round(tvl * 0.7);
+}
+
 /** Count FARM / MARGINAL / SKIP at one deposit and drop share. Plan size uses each row's own deposit. */
 export function tallyVerdicts(
   rows: ReadonlyArray<Pick<BoardRow, 'implied_value_usd' | 'tvl_usd' | 'fee_rate' | 'hold_days' | 'work_minutes' | 'gas_total_usd' | 'deposit_usd'>>,

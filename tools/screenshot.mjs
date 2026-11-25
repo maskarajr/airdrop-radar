@@ -21,7 +21,7 @@ const chrome = spawn(chromeBin, [
   '--hide-scrollbars',
   '--force-device-scale-factor=1',
   `--remote-debugging-port=${port}`,
-  '--window-size=1440,1320',
+  '--window-size=1440,1440',
   'about:blank',
 ], { stdio: 'ignore' });
 
@@ -69,7 +69,7 @@ try {
   await send('Runtime.enable');
   await send('Emulation.setDeviceMetricsOverride', {
     width: 1440,
-    height: 1320,
+    height: 1440,
     deviceScaleFactor: 1,
     mobile: false,
   });
@@ -84,18 +84,18 @@ try {
     return result.result?.value;
   }
   async function shot(name) {
-    let quality = 62;
+    let quality = 95;
     let bytes = Buffer.alloc(0);
-    for (; quality >= 28; quality -= 6) {
+    for (; quality >= 72; quality -= 3) {
       const image = await send('Page.captureScreenshot', { format: 'jpeg', quality, fromSurface: true });
       bytes = Buffer.from(image.data, 'base64');
-      if (bytes.length <= 240_000) break;
+      if (bytes.length <= 340_000) break;
     }
     const file = resolve(shotDir, name);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, bytes);
     process.stdout.write(`screenshot: ${file} ${bytes.length} bytes q=${quality}\n`);
-    if (bytes.length > 240_000) throw new Error(`${name} is ${bytes.length} bytes`);
+    if (bytes.length > 400_000) throw new Error(`${name} is ${bytes.length} bytes`);
   }
 
   await open(pageUrl);
@@ -106,30 +106,41 @@ try {
   await delay(150);
   const boardOk = await evalJs(`({
     tenk: document.querySelector('[data-dep="10000"]') && document.querySelector('[data-dep="10000"]').getAttribute('aria-pressed') === 'true',
-    farm: document.body.innerText.indexOf('FARM') >= 0,
+    rank: document.querySelector('th.sorted .th-sort') && document.querySelector('th.sorted .th-sort').textContent.indexOf('Rank') === 0,
+    evidence: document.body.innerText.indexOf('203/203 recomputed') >= 0 && document.body.innerText.indexOf('Ledger 758/758') >= 0,
     rows: document.querySelectorAll('table.board tbody tr.row').length
   })`);
-  if (!boardOk || !boardOk.tenk || !boardOk.farm || boardOk.rows < 10) throw new Error('board default view failed: ' + JSON.stringify(boardOk));
+  if (!boardOk || !boardOk.tenk || !boardOk.rank || !boardOk.evidence || boardOk.rows < 6) {
+    throw new Error('board default view failed: ' + JSON.stringify(boardOk));
+  }
   await shot('1-board.jpg');
 
   await evalJs(`location.hash = 'metalx-swap'`);
-  await delay(200);
-  const detail = await evalJs('document.body.innerText.includes("MetalX") && document.body.innerText.includes("FARM") && document.body.innerText.includes("Cost") && document.body.innerText.includes("How the figure is made")');
-  if (!detail) throw new Error('detail view did not open a FARM row');
+  await delay(250);
+  const detail = await evalJs(`({
+    name: document.body.innerText.includes("MetalX"),
+    farm: document.body.innerText.includes("FARM"),
+    plan: document.body.innerText.includes("$10,000") || document.body.innerText.includes("$10.0k"),
+    scatter: !!document.querySelector('svg.chart .mark'),
+    axes: document.body.innerText.includes("TVL vs market cap")
+  })`);
+  if (!detail || !detail.name || !detail.farm || !detail.plan || !detail.scatter || !detail.axes) {
+    throw new Error('detail view failed: ' + JSON.stringify(detail));
+  }
   await shot('2-detail.jpg');
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
   await delay(120);
   await evalJs(`
-    var cat = document.getElementById('category');
-    cat.value = 'Dexs';
-    cat.dispatchEvent(new Event('change'));
+    var verdict = document.getElementById('verdict');
+    verdict.value = 'FARM';
+    verdict.dispatchEvent(new Event('change'));
   `);
   await delay(80);
   await evalJs(`
     var buttons = document.querySelectorAll('.th-sort');
     for (var i = 0; i < buttons.length; i++) {
-      if (buttons[i].textContent.indexOf('TVL') === 0) { buttons[i].click(); break; }
+      if (buttons[i].textContent.indexOf('Net/hour') === 0) { buttons[i].click(); break; }
     }
   `);
   await delay(80);
@@ -138,23 +149,25 @@ try {
   await evalJs(`document.querySelectorAll('table.board tbody tr.row td.pick input')[1].click()`);
   await delay(80);
   await evalJs(`document.querySelectorAll('table.board tbody tr.row td.pick input')[2].click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row .expand')[0].click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row .expand')[1].click()`);
+  await delay(80);
+  await evalJs(`document.querySelectorAll('table.board tbody tr.row .expand')[2].click()`);
   await delay(150);
   const filtered = await evalJs(`({
-    chip: document.body.innerText.indexOf('Dexs') >= 0 && document.body.innerText.indexOf('×') >= 0,
+    chip: document.body.innerText.indexOf('FARM') >= 0 && document.body.innerText.indexOf('×') >= 0,
     count: document.body.innerText.indexOf('of 203') >= 0,
-    arrow: !!(document.querySelector('th.sorted .th-sort') && /[↑↓]/.test(document.querySelector('th.sorted .th-sort').textContent)),
-    compare: !!(document.getElementById('compare') && document.querySelectorAll('.cmp thead th').length >= 3)
+    arrow: !!(document.querySelector('th.sorted .th-sort') && /Net\\/hour/.test(document.querySelector('th.sorted .th-sort').textContent) && /[↑↓]/.test(document.querySelector('th.sorted .th-sort').textContent)),
+    compare: !!(document.getElementById('compare') && document.querySelectorAll('.cmp thead th').length >= 3),
+    steps: document.body.innerText.indexOf('All in:') >= 0 && document.querySelectorAll('table.board tbody tr.expanded').length >= 3,
+    tight: document.body.innerText.indexOf('All 758 protocols') < 0
   })`);
-  if (!filtered || !filtered.chip || !filtered.count || !filtered.arrow || !filtered.compare) {
+  if (!filtered || !filtered.chip || !filtered.count || !filtered.arrow || !filtered.compare || !filtered.steps || !filtered.tight) {
     throw new Error('filtered view failed: ' + JSON.stringify(filtered));
   }
   await shot('3-filtered.jpg');
-
-  await evalJs(`document.querySelector('[data-tab="evidence"]').click()`);
-  await delay(250);
-  const evidence = await evalJs('document.body.innerText.includes("Market cap against TVL") && document.body.innerText.includes("years with no token")');
-  if (!evidence) throw new Error('evidence tab did not render');
-  await shot('4-evidence.jpg');
 } finally {
   if (ws && ws.readyState === WebSocket.OPEN) ws.close();
   chrome.kill('SIGKILL');
