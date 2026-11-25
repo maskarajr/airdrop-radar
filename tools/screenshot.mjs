@@ -106,8 +106,6 @@ try {
   await delay(150);
   await shot('1-board.jpg');
 
-  await evalJs(`document.querySelector('[data-dep="10000"]').click()`);
-  await delay(100);
   await evalJs(`location.hash = 'metalx-swap'`);
   await delay(200);
   const detail = await evalJs('document.body.innerText.includes("MetalX") && document.body.innerText.includes("FARM") && document.body.innerText.includes("Cost") && document.body.innerText.includes("How the figure is made")');
@@ -116,25 +114,28 @@ try {
 
   await evalJs(`document.querySelector('.back') && document.querySelector('.back').click()`);
   await delay(100);
-  await evalJs(`document.querySelector('[data-dep="plan"]').click()`);
-  await delay(80);
   await evalJs(`
-    var row = window.RADAR.rows.find(function (r) { return r.verdict === 'MARGINAL'; });
     var cat = document.getElementById('category');
-    cat.value = row.category;
+    cat.value = 'Dexs';
     cat.dispatchEvent(new Event('change'));
   `);
   await delay(80);
   await evalJs(`
     var verdict = document.getElementById('verdict');
-    verdict.value = 'MARGINAL';
+    verdict.value = 'FARM';
     verdict.dispatchEvent(new Event('change'));
   `);
   await delay(80);
-  await evalJs(`document.querySelector('.expand').click()`);
+  await evalJs(`document.querySelector('[data-sort="tvl"]').click()`);
+  await delay(80);
+  await evalJs(`document.querySelector('.cmpick').click()`);
+  await delay(40);
+  await evalJs(`document.querySelectorAll('.cmpick')[1].click()`);
+  await delay(40);
+  await evalJs(`document.querySelectorAll('.cmpick')[2].click()`);
   await delay(150);
-  const filtered = await evalJs('document.body.innerText.includes("MARGINAL") && document.body.innerText.includes("of 203") && document.body.innerText.includes("Cost") && document.body.innerText.includes("×")');
-  if (!filtered) throw new Error('filtered view did not show chips, the count, and expanded steps');
+  const filtered = await evalJs('document.body.innerText.includes("Dexs") && document.body.innerText.includes("FARM") && document.body.innerText.includes("of 203") && document.body.innerText.includes("↓") && document.body.innerText.includes("Compare")');
+  if (!filtered) throw new Error('filtered view did not show chips, the count, a sort arrow, and the compare tray');
   await shot('3-filtered.jpg');
 
   await evalJs(`document.querySelector('[data-tab="evidence"]').click()`);

@@ -3,7 +3,7 @@
   var app = document.getElementById('app');
   var CELLS = {};
   DATA.evidence.odds_cells.forEach(function (cell) { CELLS[cell.key] = cell; });
-  var state = { q: '', category: '', verdict: '', deposit: 'plan', share: 0.07, open: '' };
+  var state = { q: '', category: '', verdict: '', watch: false, deposit: '10000', share: 0.07, open: '', sort: 'hour', dir: -1, compare: [] };
 
   function money(n) {
     var sign = n < 0 ? '−' : '';
@@ -294,21 +294,39 @@
     return h('ul', { class: 'ticks' }, checks.map(function (c) { return h('li', { class: c[0] ? 'ok' : 'bad', text: c[1] }); }));
   }
 
+  function viewOf(row) {
+    var econ = economics(row, depositOf(row));
+    return { econ: econ, verdict: verdictOf(econ.net, econ.perHour) };
+  }
+
+  function tally() {
+    var counts = { FARM: 0, MARGINAL: 0, SKIP: 0 };
+    DATA.rows.forEach(function (row) { counts[viewOf(row).verdict] += 1; });
+    return counts;
+  }
+
+  function planLine(row) {
+    return money(depositOf(row)) + ' · ' + row.hold_days + ' d · ' + row.farm_steps.length + ' steps';
+  }
+
   function farmNext() {
     var ranked = DATA.rows.map(function (row) {
-      var econ = economics(row, depositOf(row));
-      return { row: row, econ: econ, verdict: verdictOf(econ.net, econ.perHour) };
-    }).sort(function (a, b) { return b.econ.perHour - a.econ.perHour || a.row.rank - b.row.rank; }).slice(0, 3);
-    return h('section', { class: 'next' }, [
-      h('h2', { text: 'Farm next' }),
-      h('div', { class: 'next-row' }, ranked.map(function (item) {
+      var view = viewOf(row);
+      return { row: row, econ: view.econ, verdict: view.verdict };
+    }).filter(function (item) { return item.verdict === 'FARM'; })
+      .sort(function (a, b) { return b.econ.perHour - a.econ.perHour || a.row.rank - b.row.rank; })
+      .slice(0, 3);
+    var body = ranked.length === 0
+      ? h('p', { class: 'muted', text: 'No row clears $25 an hour at this deposit.' })
+      : h('div', { class: 'next-row' }, ranked.map(function (item) {
         return h('button', { type: 'button', onclick: function () { go(item.row.slug); } }, [
           h('span', { class: 'name-btn', text: item.row.name }),
           pill(item.verdict),
-          h('span', { class: 'muted', text: money(item.econ.perHour) + '/hour · net ' + money(item.econ.net) }),
+          h('span', { class: 'muted', text: money(item.econ.net) + ' net · ' + money(item.econ.perHour) + '/hour' }),
+          h('span', { class: 'muted', text: planLine(item.row) }),
         ]);
-      })),
-    ]);
+      }));
+    return h('section', { class: 'next' }, [h('h2', { text: 'Farm next' }), body]);
   }
 
   function rangeBar(row) {
@@ -357,17 +375,43 @@
     ]);
   }
 
+  function sortValue(row, key) {
+    if (key === 'rank') return row.rank;
+    if (key === 'tvl') return row.tvl_usd;
+    if (key === 'd7') return row.change_7d === null ? -1e12 : row.change_7d;
+    if (key === 'age') return row.age_days === null ? -1 : row.age_days;
+    if (key === 'odds') return row.p_token;
+    if (key === 'launch') return row.launch_value_usd;
+    if (key === 'implied') return row.implied_value_usd;
+    if (key === 'net') return viewOf(row).econ.net;
+    return viewOf(row).econ.perHour;
+  }
+
   function filteredRows() {
     var q = state.q.trim().toLowerCase();
-    return DATA.rows.filter(function (row) {
+    var rows = DATA.rows.filter(function (row) {
+      if (state.watch && !row.watchlist) return false;
       if (state.category && row.category !== state.category) return false;
-      if (state.verdict) {
-        var econ = economics(row, depositOf(row));
-        if (verdictOf(econ.net, econ.perHour) !== state.verdict) return false;
-      }
+      if (state.verdict && viewOf(row).verdict !== state.verdict) return false;
       if (!q) return true;
-      return (row.name + ' ' + row.category).toLowerCase().indexOf(q) !== -1;
+      return (row.name + ' ' + row.slug + ' ' + row.category).toLowerCase().indexOf(q) !== -1;
     });
+    var dir = state.dir;
+    var key = state.sort;
+    return rows.slice().sort(function (a, b) {
+      var av = sortValue(a, key);
+      var bv = sortValue(b, key);
+      if (av < bv) return -dir;
+      if (av > bv) return dir;
+      return a.rank - b.rank;
+    });
+  }
+
+  function toggleCompare(slug) {
+    var at = state.compare.indexOf(slug);
+    if (at >= 0) state.compare.splice(at, 1);
+    else if (state.compare.length < 3) state.compare.push(slug);
+    render();
   }
 
   function controls(shown) {
@@ -390,10 +434,52 @@
       h('select', { id: 'verdict', onchange: function (ev) { state.verdict = ev.target.value; render(); } }, ['', 'FARM', 'MARGINAL', 'SKIP'].map(function (v) {
         return h('option', { value: v, text: v || 'All verdicts', selected: v === state.verdict ? 'selected' : null });
       })),
+      h('input', { id: 'q', type: 'search', placeholder: 'Search protocols', value: state.q, oninput: function (ev) { state.q = ev.target.value; render(); } }),
+      h('button', { type: 'button', id: 'watch', class: 'chip', 'aria-pressed': state.watch ? 'true' : 'false', text: 'Watchlist only', onclick: function () { state.watch = !state.watch; render(); } }),
       state.category ? h('button', { type: 'button', class: 'chip', text: state.category + ' ×', onclick: function () { state.category = ''; render(); } }) : null,
       state.verdict ? h('button', { type: 'button', class: 'chip', text: state.verdict + ' ×', onclick: function () { state.verdict = ''; render(); } }) : null,
+      state.watch ? h('button', { type: 'button', class: 'chip', text: 'Watchlist ×', onclick: function () { state.watch = false; render(); } }) : null,
       h('span', { class: 'shown', text: shown + ' of ' + DATA.rows.length }),
     ]);
+  }
+
+  function sortHead(key, label) {
+    var on = state.sort === key;
+    var arrow = on ? (state.dir < 0 ? ' ↓' : ' ↑') : '';
+    return h('th', { class: 'num' }, [
+      h('button', { type: 'button', 'data-sort': key, text: label + arrow, onclick: function () {
+        if (state.sort === key) state.dir = -state.dir;
+        else { state.sort = key; state.dir = key === 'rank' ? 1 : -1; }
+        render();
+      } }),
+    ]);
+  }
+
+  function compareTray() {
+    if (state.compare.length === 0) return null;
+    var cards = state.compare.map(function (slug) {
+      var row = null;
+      for (var i = 0; i < DATA.rows.length; i += 1) if (DATA.rows[i].slug === slug) row = DATA.rows[i];
+      if (!row) return null;
+      var view = viewOf(row);
+      var change = row.change_7d === null ? '—' : (row.change_7d > 0 ? '+' : '') + row.change_7d.toFixed(1) + '%';
+      return h('article', { class: 'cmp' }, [
+        h('h3', { text: row.name }),
+        pill(view.verdict),
+        h('dl', null, [
+          h('dt', { text: 'TVL' }), h('dd', { text: money(row.tvl_usd) }),
+          h('dt', { text: '7D' }), h('dd', { text: change }),
+          h('dt', { text: 'No-token age' }), h('dd', { text: ageText(row.age_days) }),
+          h('dt', { text: 'Odds' }), h('dd', { text: pct(row.p_token) }),
+          h('dt', { text: 'If it launches' }), h('dd', { text: money(row.launch_value_usd) }),
+          h('dt', { text: 'Implied value' }), h('dd', { text: money(row.implied_value_usd) }),
+          h('dt', { text: 'Net' }), h('dd', { text: money(view.econ.net) }),
+          h('dt', { text: 'Net/hour' }), h('dd', { text: money(view.econ.perHour) }),
+          h('dt', { text: 'Plan' }), h('dd', { text: planLine(row) }),
+        ]),
+      ]);
+    });
+    return h('section', { class: 'tray' }, [h('h2', { text: 'Compare' }), h('div', { class: 'tray-row' }, cards)]);
   }
 
   function board() {
@@ -407,6 +493,13 @@
       body.push(h('tr', null, [
         h('td', { class: 'num' }, [h('div', { text: String(row.rank) }), h('div', { class: 'band', text: row.rank_lo + '–' + row.rank_hi })]),
         h('td', null, [
+          h('label', { class: 'pick' }, [
+            h('input', {
+              type: 'checkbox', class: 'cmpick', 'aria-label': 'Compare ' + row.name,
+              checked: state.compare.indexOf(row.slug) >= 0 ? 'checked' : null,
+              onchange: function () { toggleCompare(row.slug); },
+            }),
+          ]),
           h('button', { type: 'button', class: 'name-btn', text: row.name, onclick: function () { go(row.slug); } }),
           h('span', { class: 'tag' + (row.watchlist ? ' watch' : ''), text: row.watchlist ? 'Watchlist' : 'Off-list' }),
         ]),
@@ -423,7 +516,7 @@
         h('td', null, [pill(verdict), h('div', { class: 'band', text: money(econ.net) })]),
         h('td', { class: 'num', text: money(econ.perHour) }),
         h('td', null, [
-          h('div', { text: money(dep) + ' · ' + row.hold_days + ' d · ' + row.farm_steps.length + ' steps' }),
+          h('div', { class: 'plan', text: planLine(row) }),
           h('button', { type: 'button', class: 'expand', text: state.open === row.slug ? 'Hide steps' : 'Steps', onclick: function () { state.open = state.open === row.slug ? '' : row.slug; render(); } }),
         ]),
       ]));
@@ -431,14 +524,30 @@
         body.push(h('tr', { class: 'expanded' }, [h('td', { colspan: '11' }, [stepList(row, dep)])]));
       }
     });
+    var counts = tally();
     return h('div', { id: 'main' }, [
       farmNext(),
       controls(rows.length),
-      rows.length === 0 ? h('p', { class: 'empty', text: 'Nothing matches this filter.' }) : h('table', null, [
-        h('thead', null, [h('tr', null, ['Rank', 'Protocol', 'TVL', '7D', 'No-token age', 'Odds', 'If it launches', 'Implied value', 'Verdict', 'Net/hour', 'Plan'].map(function (label, i) {
-          var numeric = i === 0 || i === 2 || i === 3 || i === 4 || i === 6 || i === 7 || i === 9;
-          return h('th', { class: numeric ? 'num' : '', text: label });
-        }))]),
+      h('p', { class: 'mix' }, [
+        h('span', { class: 'pill farm', text: 'FARM ' + counts.FARM }),
+        h('span', { class: 'pill marginal', text: 'MARGINAL ' + counts.MARGINAL }),
+        h('span', { class: 'pill skip', text: 'SKIP ' + counts.SKIP }),
+      ]),
+      compareTray(),
+      rows.length === 0 ? h('p', { class: 'empty', text: 'No protocols match this search and filter.' }) : h('table', { class: 'board' }, [
+        h('thead', null, [h('tr', null, [
+          sortHead('rank', 'Rank'),
+          h('th', { text: 'Protocol' }),
+          sortHead('tvl', 'TVL'),
+          sortHead('d7', '7D'),
+          sortHead('age', 'No-token age'),
+          sortHead('odds', 'Odds'),
+          sortHead('launch', 'If it launches'),
+          sortHead('implied', 'Implied value'),
+          h('th', { text: 'Verdict' }),
+          sortHead('hour', 'Net/hour'),
+          h('th', { text: 'Plan' }),
+        ])]),
         h('tbody', null, body),
       ]),
     ]);
