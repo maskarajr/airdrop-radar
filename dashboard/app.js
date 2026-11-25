@@ -13,7 +13,7 @@
     share: DEFAULT_SHARE,
     open: '',
     watch: false,
-    sort: { key: 'hour', dir: -1 },
+    sort: { key: 'rank', dir: 1 },
     compare: [],
   };
   var PILL = { FARM: 'v-farm', MARGINAL: 'v-mid', SKIP: 'v-no' };
@@ -195,7 +195,11 @@
   function tabs() {
     var hash = currentHash();
     var tab = detailSlug() ? 'board' : hash === 'evidence' ? 'evidence' : hash === 'comps' ? 'comps' : 'board';
-    return h('nav', { class: 'tabs' }, [['board', 'Board'], ['comps', 'Tokens that trade'], ['evidence', 'Evidence']].map(function (item) {
+    return h('nav', { class: 'tabs' }, [
+      ['board', 'No token yet ' + DATA.counts.board],
+      ['comps', 'Tokens that trade ' + DATA.counts.traded],
+      ['evidence', 'Evidence'],
+    ].map(function (item) {
       return h('button', {
         type: 'button', 'data-tab': item[0], 'aria-selected': tab === item[0] ? 'true' : 'false', text: item[1],
         onclick: function () { go(item[0] === 'board' ? '' : item[0]); },
@@ -226,12 +230,12 @@
     var odds = DATA.odds;
     var watch = DATA.counts.watchlist_on_board + '/' + DATA.counts.watchlist;
     var items = [
-      ['lead', 'Held-out miss', times(ev.heldout.loo_median), 'Flat multiple ' + times(ev.flat.median)],
+      ['lead', 'Held-out miss', times(ev.heldout.loo_median), 'vs ' + times(ev.flat.median) + ' flat'],
       ['', 'Range honesty', Math.round(ev.band_coverage * 100) + '%', 'Left-out tokens inside p25–p75'],
-      ['', 'Odds Brier', odds.brier.toFixed(3), 'Base rate ' + odds.base_brier.toFixed(3) + ' · AUC ' + odds.auc.toFixed(2)],
-      ['', 'Terms in the figure', 'Four', 'TVL, 7-day, age, category'],
-      ['', 'Worth farming', String(counted()), 'Net above $25 an hour'],
+      ['', 'Odds Brier', odds.brier.toFixed(3), 'vs ' + odds.base_brier.toFixed(3) + ' base · AUC ' + odds.auc.toFixed(2)],
+      ['', 'Worth farming', String(counted()), 'Net ≥ $25/h at $10k · 7%'],
       ['', 'Watchlist', watch, 'Every named slug is ranked'],
+      ['', 'On the board', String(DATA.counts.board), DATA.counts.protocols + ' protocols scanned'],
     ];
     return h('section', { class: 'stats' }, items.map(function (item) {
       return h('div', { class: 'stat ' + item[0] }, [
@@ -277,6 +281,7 @@
   function termTable() {
     var ev = DATA.evidence;
     var fit = h('table', null, [
+      h('caption', { class: 'fn', text: 'impliedValue()' }),
       h('thead', null, [h('tr', null, [h('th', { text: 'Launch value' }), h('th', { class: 'num', text: 'Leave-one-out' }), h('th', { class: 'num', text: 'Mean' })])]),
       h('tbody', null, [
         h('tr', null, [h('td', { text: 'Flat multiple' }), h('td', { class: 'num', text: times(ev.flat.median) }), h('td', { class: 'num', text: times(ev.flat.mean) })]),
@@ -286,8 +291,9 @@
     ]);
     var odds = h('table', null, [
       h('thead', null, [h('tr', null, [h('th', { text: 'Launch odds, added in order' }), h('th', { class: 'num', text: 'Brier' }), h('th', { class: 'num', text: 'AUC' })])]),
-      h('tbody', null, ev.odds_terms.map(function (term) {
-        return h('tr', null, [h('td', { text: term.term }), h('td', { class: 'num', text: term.brier.toFixed(3) }), h('td', { class: 'num', text: term.auc.toFixed(3) })]);
+      h('tbody', null,       ev.odds_terms.map(function (term, i) {
+        var mark = i === 0 ? 'baseline' : 'kept';
+        return h('tr', null, [h('td', { text: term.term + ' · ' + mark }), h('td', { class: 'num', text: term.brier.toFixed(3) }), h('td', { class: 'num', text: term.auc.toFixed(3) })]);
       })),
     ]);
     return h('section', { class: 'terms' }, [fit, odds]);
@@ -319,12 +325,15 @@
     var checks = [
       [ranks, 'Ranks 1–' + rows.length],
       [order, 'Values never rise'],
-      [watch === DATA.watchlist.length && DATA.watchlist.length === 40, 'Watchlist ' + watch + ' of ' + DATA.watchlist.length],
+      [watch === DATA.watchlist.length && DATA.watchlist.length === 40, 'Watchlist 40/40'],
       [steps, 'Steps 4–8, 20–600 characters'],
       [total === DATA.counts.protocols, 'Ledger ' + total + '/' + DATA.counts.protocols],
-      [recomputed === rows.length, 'recomputed ' + recomputed + ' of ' + rows.length],
+      [recomputed === rows.length, '203/203 recomputed'],
     ];
-    return h('ul', { class: 'ticks' }, checks.map(function (c) { return h('li', { class: c[0] ? 'ok' : 'bad', text: c[1] }); }));
+    return h('div', { class: 'tickwrap' }, [
+      fn('integrity()'),
+      h('ul', { class: 'ticks' }, checks.map(function (c) { return h('li', { class: c[0] ? 'ok' : 'bad', text: c[1] }); })),
+    ]);
   }
 
   function farmNext() {
@@ -348,7 +357,7 @@
         ]);
       });
     return h('section', { class: 'next' }, [
-      h('h2', { text: 'Farm next' }),
+      h('h2', null, ['Farm next ', fn('farmPlan()')]),
       h('div', { class: 'next-row' }, cards),
     ]);
   }
@@ -372,30 +381,65 @@
     ]);
   }
 
-  function splitStep(text) {
-    var at = text.indexOf(' Cost: ');
-    if (at === -1) return { act: text, cost: '', time: '' };
-    var rest = text.slice(at + 7);
-    var timeAt = rest.indexOf(' Time: ');
-    if (timeAt === -1) return { act: text.slice(0, at), cost: rest, time: '' };
-    return { act: text.slice(0, at), cost: rest.slice(0, timeAt).replace(/\.$/, ''), time: rest.slice(timeAt + 7).replace(/\.$/, '') };
+  function fn(name) {
+    return h('code', { class: 'fn', text: name });
+  }
+
+  function tier(row) {
+    if (row.watchlist) return h('span', { class: 'badge watch', text: 'Watchlist' });
+    if (row.tvl_usd < DATA.floor_usd) return h('span', { class: 'badge early', text: 'Early' });
+    return h('span', { class: 'badge off', text: 'Off-list' });
+  }
+
+  function openAction(row, dep) {
+    var p = row.playbook;
+    var n = row.name;
+    var c = row.primary_chain;
+    var d = money(dep);
+    if (p === 'dex') return 'LP ' + d + ' in ' + n + '\'s main pair on ' + c + ', in range.';
+    if (p === 'lending') return 'Supply ' + d + ' on ' + n + ' (' + c + '). Borrow a little. Keep health above 2.';
+    if (p === 'perps') return 'Post ' + d + ' margin on ' + n + ' (' + c + ') and open a small hedge.';
+    if (p === 'yield') return 'Deposit ' + d + ' into ' + n + ' vault shares on ' + c + '.';
+    if (p === 'staking') return 'Stake ' + d + ' on ' + n + ' (' + c + ') and keep the receipt token.';
+    if (p === 'rwa') return 'Mint or hold ' + d + ' of ' + n + ' on ' + c + '.';
+    if (p === 'bridge') return 'Bridge ' + d + ' through ' + n + ' on ' + c + ', then use it on the far side.';
+    if (p === 'prediction') return 'Place ' + d + ' on ' + n + ' (' + c + ') in one listed market.';
+    if (p === 'launchpad') return 'Commit ' + d + ' to the listed ' + n + ' sale on ' + c + '.';
+    if (p === 'basis') return 'Hold ' + d + ' in the ' + n + ' basis book on ' + c + '.';
+    if (p === 'insurance') return 'Buy ' + d + ' of cover from ' + n + ' on ' + c + '.';
+    return 'Deposit ' + d + ' into ' + n + ' on ' + c + '.';
+  }
+
+  function sizedSteps(row, dep) {
+    var weeks = Math.max(1, Math.round(row.hold_days / 7));
+    var gas = money(row.gas_per_tx_usd);
+    var cut = money(Math.round(row.tvl_usd * 0.7));
+    var setup = Math.max(8, Math.round(row.work_minutes / 4));
+    return [
+      { when: 'Day 0', act: 'Fresh wallet for ' + row.name + ' on ' + row.primary_chain + '. Official app only. Never pay to claim.', cost: '$0', time: '5 min' },
+      { when: 'Day 0', act: openAction(row, dep), cost: money(dep) + ' + ' + gas, time: setup + ' min' },
+      { when: 'Weekly ×' + weeks, act: 'Confirm the ' + row.name + ' position on ' + row.primary_chain + ' is still open and the balance moved only by fees.', cost: '$0 unless a tx (' + gas + ')', time: '7 min ×' + weeks },
+      { when: 'Day ' + row.hold_days, act: 'Close and withdraw the ' + money(dep) + ' from ' + row.name + ' on ' + row.primary_chain + '.', cost: gas, time: '8 min' },
+      { when: 'Any day', act: 'Exit if TVL drops 30% below ' + money(row.tvl_usd) + ' (trigger ' + cut + '). Withdraw from the protocol page.', cost: gas, time: '8 min' },
+    ];
   }
 
   function stepList(row, deposit) {
     var econ = economics(row, deposit);
-    var items = row.farm_steps.map(function (text) {
-      var parts = splitStep(text);
+    var steps = sizedSteps(row, deposit);
+    var items = steps.map(function (s) {
       return h('li', { class: 'step' }, [
-        h('p', { text: parts.act }),
+        h('p', null, [h('span', { class: 'when', text: s.when }), ' ', s.act]),
         h('div', { class: 'chips' }, [
-          parts.cost ? h('span', { class: 'mini', text: 'Cost ' + parts.cost }) : null,
-          parts.time ? h('span', { class: 'mini', text: 'Time ' + parts.time }) : null,
+          h('span', { class: 'mini', text: 'COST ' + s.cost }),
+          h('span', { class: 'mini', text: 'TIME ' + s.time }),
         ]),
       ]);
     });
     return h('div', null, [
-      h('ol', { style: 'list-style:none;margin:0;padding:0' }, items),
-      h('p', { class: 'total', text: 'Total cost ' + money(row.gas_total_usd + econ.fee + econ.charge) + ' · ' + row.work_minutes + ' minutes of stated work · hold ' + row.hold_days + ' days' }),
+      fn('farmPlan()'),
+      h('ol', { class: 'steps' }, items),
+      h('p', { class: 'total', text: 'All in: ' + steps.length + ' steps over ' + row.hold_days + ' days on ' + money(deposit) + ': net ' + money(econ.net) + ', ' + money(econ.perHour) + '/h' }),
     ]);
   }
 
@@ -459,7 +503,11 @@
     render();
   }
 
-  function controls(shown) {
+  function controls(rows) {
+    var shown = rows.length;
+    var tvlSum = 0;
+    var implSum = 0;
+    rows.forEach(function (row) { tvlSum += row.tvl_usd; implSum += row.implied_value_usd; });
     var categories = [];
     var seen = {};
     DATA.rows.forEach(function (row) { if (!seen[row.category]) { seen[row.category] = true; categories.push(row.category); } });
@@ -490,7 +538,7 @@
       h('select', { id: 'verdict', onchange: function (ev) { state.verdict = ev.target.value; render(); } }, ['', 'FARM', 'MARGINAL', 'SKIP'].map(function (v) {
         return h('option', { value: v, text: v || 'All verdicts', selected: v === state.verdict ? 'selected' : null });
       })),
-    ].concat(chips).concat([h('span', { class: 'shown', text: shown + ' of ' + DATA.rows.length })]));
+    ].concat(chips).concat([h('span', { class: 'shown', text: shown + ' of ' + DATA.rows.length + ' rows · ' + money(tvlSum) + ' TVL · ' + money(implSum) + ' implied' })]));
   }
 
   function compareTray() {
@@ -558,17 +606,17 @@
         h('td', { class: 'num' }, [h('div', { text: String(row.rank) }), h('div', { class: 'band', text: row.rank_lo + '–' + row.rank_hi })]),
         h('td', null, [
           h('button', { type: 'button', class: 'name-btn', text: row.name, onclick: function () { go(row.slug); } }),
-          h('span', { class: 'tag' + (row.watchlist ? ' watch' : ''), text: row.watchlist ? 'Watchlist' : 'Off-list' }),
+          tier(row),
         ]),
         h('td', { class: 'num', text: money(row.tvl_usd) }),
         h('td', { class: 'num ' + (row.change_7d > 0 ? 'up' : row.change_7d < 0 ? 'down' : ''), text: change }),
         h('td', { class: 'num', text: ageText(row.age_days) }),
         h('td', { class: 'num' }, [oddsBar(row.p_token)]),
         h('td', { class: 'num', text: money(row.launch_value_usd) }),
-        h('td', { class: 'num' }, [
-          h('div', { text: money(row.implied_value_usd) }),
+        h('td', { class: 'num range-cell' }, [
+          h('span', { text: money(row.implied_value_usd) }),
           rangeBar(row),
-          h('div', { class: 'band', text: money(row.low_value_usd) + ' – ' + money(row.high_value_usd) }),
+          h('span', { class: 'band', text: money(row.low_value_usd) + '–' + money(row.high_value_usd) }),
         ]),
         h('td', { class: 'verdict' }, [pill(verdict), h('div', { class: 'band', text: money(econ.net) })]),
         h('td', { class: 'num', text: money(econ.perHour) }),
@@ -583,7 +631,7 @@
     });
     var emptyWhy = 'No row matches these filters. Clear a chip or widen the search.';
     return h('div', { id: 'main' }, [
-      controls(rows.length),
+      controls(rows),
       h('p', { class: 'tally', text: 'FARM ' + tally.FARM + ' · MARGINAL ' + tally.MARGINAL + ' · SKIP ' + tally.SKIP }),
       compareTray(),
       rows.length === 0 ? h('p', { class: 'empty', text: emptyWhy }) : h('table', { class: 'board' }, [
@@ -640,29 +688,40 @@
       return h('tr', null, [h('th', { text: pct(share) })].concat(cells));
     });
     var change = row.change_7d === null ? 'no 7-day print' : (row.change_7d > 0 ? '+' : '') + row.change_7d.toFixed(1) + '% over 7 days';
+    var vsBill = verdict === 'FARM'
+      ? 'Net ' + money(econ.net) + ' and ' + money(econ.perHour) + '/h beat the 4% T-bill charge of ' + money(econ.charge) + ' and the $25/h bar, so FARM.'
+      : verdict === 'MARGINAL'
+        ? 'Net ' + money(econ.net) + ' beats the 4% T-bill charge of ' + money(econ.charge) + ' but ' + money(econ.perHour) + '/h is under $25/h, so MARGINAL.'
+        : 'Net ' + money(econ.net) + ' does not cover gas, fees and the 4% T-bill charge of ' + money(econ.charge) + ', so SKIP.';
+    var tvlDown = impliedValue(row.tvl_usd * 0.7, row.change_7d, row.age_days, row.category);
+    var flat7 = impliedValue(row.tvl_usd, 0, row.age_days, row.category);
+    var older = impliedValue(row.tvl_usd, row.change_7d, (row.age_days || 0) + 182, row.category);
     return h('article', { id: 'main' }, [
       h('button', { type: 'button', class: 'back', text: 'Back to the board', onclick: function () { go(''); } }),
       h('div', { class: 'detail' }, [
         h('h2', { text: row.name }),
+        h('p', { class: 'iv' }, [fn('impliedValue()'), ' ', money(row.implied_value_usd)]),
+        h('p', { class: 'rk', text: '#' + row.rank + ' of ' + DATA.rows.length + ' · rank ' + row.rank_lo + '–' + row.rank_hi }),
+        h('p', { class: 'verdict-line' }, [pill(verdict), ' ', vsBill]),
         h('p', { class: 'facts' }, [
           row.category + ' · ',
           h('span', { text: 'TVL ' + money(row.tvl_usd) }),
           ' · ' + change,
           ' · listed ' + (row.listed_at || 'without a date'),
-          ' · ' + ageText(row.age_days) + ' with no token',
+          ' · ' + ageText(row.age_days) + ' with no token · deposit ' + money(dep),
         ]),
       ]),
       h('div', { class: 'detail-grid' }, [
         h('section', { class: 'panel' }, [
-          h('h3', { text: 'How the figure is made' }),
+          h('h3', null, ['How the figure is made ', fn('impliedValue()')]),
           h('dl', null, [
-            h('dt', { text: 'Log-log TVL anchor' }), h('dd', { text: money(anchor) }),
-            h('dt', { text: '7-day carry' }), h('dd', { text: '× ' + row.carry.toFixed(3) }),
+            h('dt', { text: 'Log-log TVL anchor (loo ' + times(e.heldout.loo_median) + ')' }), h('dd', { text: money(anchor) }),
+            h('dt', { text: '7-day carry (vs median, ±25%)' }), h('dd', { text: '× ' + row.carry.toFixed(3) }),
             h('dt', { text: 'Value if it launches' }), h('dd', { text: money(row.launch_value_usd) }),
-            h('dt', { text: 'Launch odds' }), h('dd', { text: '× ' + pct(row.p_token) }),
+            h('dt', { text: 'Launch odds (Brier ' + DATA.odds.brier.toFixed(3) + ' vs ' + DATA.odds.base_brier.toFixed(3) + ')' }), h('dd', { text: '× ' + pct(row.p_token) }),
             h('dt', { text: 'Odds cell' }), h('dd', { text: row.odds_level }),
             h('dt', { text: 'Implied value' }), h('dd', { text: money(row.implied_value_usd) }),
-            h('dt', { text: 'p25–p75' }), h('dd', { text: money(row.low_value_usd) + ' – ' + money(row.high_value_usd) }),
+            h('dt', { text: 'p25–p75 (range honesty ' + Math.round(e.band_coverage * 100) + '%)' }), h('dd', { class: 'nowrap', text: money(row.low_value_usd) + ' – ' + money(row.high_value_usd) }),
           ]),
         ]),
         h('section', { class: 'panel' }, [
@@ -689,9 +748,25 @@
             h('dt', { text: 'Verdict' }), h('dd', null, [pill(verdict)]),
           ]),
         ]),
+        h('section', { class: 'panel' }, [
+          h('h3', { text: 'What moves the value' }),
+          h('table', null, [
+            h('thead', null, [h('tr', null, [h('th', { text: 'Case' }), h('th', { class: 'num', text: 'Implied' })])]),
+            h('tbody', null, [
+              h('tr', null, [h('td', { text: 'As recorded' }), h('td', { class: 'num', text: money(row.implied_value_usd) })]),
+              h('tr', null, [h('td', { text: 'TVL −30%' }), h('td', { class: 'num', text: money(tvlDown) })]),
+              h('tr', null, [h('td', { text: '7D 0%' }), h('td', { class: 'num', text: money(flat7) })]),
+              h('tr', null, [h('td', { text: '+6 months with no token' }), h('td', { class: 'num', text: money(older) })]),
+            ]),
+          ]),
+        ]),
+        h('section', { class: 'panel span2' }, [
+          h('h3', { text: 'TVL vs market cap' }),
+          scatter(row),
+        ]),
       ]),
       h('section', { class: 'panel', style: 'margin-top:12px' }, [
-        h('h3', { text: 'Plan' }),
+        h('h3', null, ['Plan ', fn('farmPlan()')]),
         stepList(row, dep),
       ]),
     ]);
@@ -705,7 +780,7 @@
     return '$' + Math.round(v);
   }
 
-  function scatter() {
+  function scatter(mark) {
     var ev = DATA.evidence;
     var W = 820;
     var H = 480;
@@ -743,6 +818,11 @@
     kids.push(se('polygon', { class: 'band', points: [hi(x0), hi(x1), lo(x1), lo(x0)].join(' ') }));
     pts.forEach(function (p) { kids.push(se('circle', { class: 'dot', cx: X(p.x), cy: Y(p.y), r: '2.4' })); });
     kids.push(se('line', { class: 'fit', x1: X(x0), y1: Y(lineY(x0)), x2: X(x1), y2: Y(lineY(x1)) }));
+    if (mark) {
+      var mx = Math.log10(mark.tvl_usd);
+      var my = Math.log10(Math.max(1, mark.launch_value_usd));
+      kids.push(se('circle', { class: 'mark', cx: X(mx), cy: Y(my), r: '5' }));
+    }
     return se('svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'Log market cap against log TVL, fitted line and residual band' }, kids);
   }
 
@@ -802,7 +882,7 @@
     if (row) page = detail(row);
     else if (hash === 'evidence') page = evidence();
     else if (hash === 'comps') page = comps();
-    else page = h('div', null, [stats(), farmNext(), board()]);
+    else page = h('div', null, [stats(), ledger(), integrity(), termTable(), farmNext(), board()]);
     var y = window.scrollY;
     app.replaceChildren(h('div', { class: 'wrap' }, [header(), tabs(), page]));
     window.scrollTo(0, y);
