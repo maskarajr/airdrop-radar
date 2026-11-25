@@ -3,7 +3,20 @@
   var app = document.getElementById('app');
   var CELLS = {};
   DATA.evidence.odds_cells.forEach(function (cell) { CELLS[cell.key] = cell; });
-  var state = { q: '', category: '', verdict: '', deposit: 'plan', share: 0.07, open: '' };
+  var DEFAULT_DEP = DATA.default_deposit_usd || 10000;
+  var DEFAULT_SHARE = 0.07;
+  var state = {
+    q: '',
+    category: '',
+    verdict: '',
+    deposit: String(DEFAULT_DEP),
+    share: DEFAULT_SHARE,
+    open: '',
+    watch: false,
+    sort: { key: 'rank', dir: 1 },
+    compare: [],
+  };
+  var PILL = { FARM: 'v-farm', MARGINAL: 'v-mid', SKIP: 'v-no' };
 
   function money(n) {
     var sign = n < 0 ? '−' : '';
@@ -114,8 +127,7 @@
     return Number(state.deposit);
   }
 
-  function economics(row, deposit) {
-    var share = state.share;
+  function economicsAt(row, deposit, share) {
     var drop = row.implied_value_usd * share * deposit / (row.tvl_usd + deposit);
     var fee = deposit * row.fee_rate;
     var charge = deposit * 0.04 * row.hold_days / 365;
@@ -130,6 +142,14 @@
     };
   }
 
+  function economics(row, deposit) {
+    return economicsAt(row, deposit, state.share);
+  }
+
+  function defaultEcon(row) {
+    return economicsAt(row, DEFAULT_DEP, DEFAULT_SHARE);
+  }
+
   function verdictOf(net, perHour) {
     if (net > 0 && perHour >= 25) return 'FARM';
     if (net > 0) return 'MARGINAL';
@@ -137,7 +157,11 @@
   }
 
   function pill(verdict) {
-    return h('span', { class: 'pill ' + verdict.toLowerCase(), text: verdict });
+    return h('span', { class: 'pill ' + PILL[verdict], text: verdict });
+  }
+
+  function planLine(row, deposit) {
+    return money(deposit) + ' · ' + row.hold_days + ' d · ' + row.farm_steps.length + ' steps';
   }
 
   function ageText(days) {
@@ -156,7 +180,7 @@
 
   function detailSlug() {
     var hash = currentHash();
-    if (!hash || hash === 'evidence' || hash === 'board') return '';
+    if (!hash || hash === 'evidence' || hash === 'board' || hash === 'comps') return '';
     for (var i = 0; i < DATA.rows.length; i += 1) if (DATA.rows[i].slug === hash) return hash;
     return '';
   }
@@ -170,8 +194,8 @@
 
   function tabs() {
     var hash = currentHash();
-    var tab = detailSlug() ? 'board' : hash === 'evidence' ? 'evidence' : 'board';
-    return h('nav', { class: 'tabs' }, [['board', 'Board'], ['evidence', 'Evidence']].map(function (item) {
+    var tab = detailSlug() ? 'board' : hash === 'evidence' ? 'evidence' : hash === 'comps' ? 'comps' : 'board';
+    return h('nav', { class: 'tabs' }, [['board', 'Board'], ['comps', 'Tokens that trade'], ['evidence', 'Evidence']].map(function (item) {
       return h('button', {
         type: 'button', 'data-tab': item[0], 'aria-selected': tab === item[0] ? 'true' : 'false', text: item[1],
         onclick: function () { go(item[0] === 'board' ? '' : item[0]); },
@@ -182,10 +206,19 @@
   function counted() {
     var farm = 0;
     DATA.rows.forEach(function (row) {
-      var econ = economics(row, depositOf(row));
+      var econ = defaultEcon(row);
       if (verdictOf(econ.net, econ.perHour) === 'FARM') farm += 1;
     });
     return farm;
+  }
+
+  function liveTally(rows) {
+    var t = { FARM: 0, MARGINAL: 0, SKIP: 0 };
+    rows.forEach(function (row) {
+      var econ = economics(row, depositOf(row));
+      t[verdictOf(econ.net, econ.perHour)] += 1;
+    });
+    return t;
   }
 
   function stats() {
@@ -295,19 +328,28 @@
   }
 
   function farmNext() {
-    var ranked = DATA.rows.map(function (row) {
-      var econ = economics(row, depositOf(row));
-      return { row: row, econ: econ, verdict: verdictOf(econ.net, econ.perHour) };
-    }).sort(function (a, b) { return b.econ.perHour - a.econ.perHour || a.row.rank - b.row.rank; }).slice(0, 3);
-    return h('section', { class: 'next' }, [
-      h('h2', { text: 'Farm next' }),
-      h('div', { class: 'next-row' }, ranked.map(function (item) {
+    var ranked = [];
+    DATA.rows.forEach(function (row) {
+      var econ = defaultEcon(row);
+      var verdict = verdictOf(econ.net, econ.perHour);
+      if (verdict === 'FARM') ranked.push({ row: row, econ: econ });
+    });
+    ranked.sort(function (a, b) { return b.econ.perHour - a.econ.perHour || a.row.rank - b.row.rank; });
+    ranked = ranked.slice(0, 3);
+    var cards = ranked.length === 0
+      ? [h('p', { class: 'empty', text: 'No FARM row at the default $10k · 7% view.' })]
+      : ranked.map(function (item) {
         return h('button', { type: 'button', onclick: function () { go(item.row.slug); } }, [
           h('span', { class: 'name-btn', text: item.row.name }),
-          pill(item.verdict),
-          h('span', { class: 'muted', text: money(item.econ.perHour) + '/hour · net ' + money(item.econ.net) }),
+          pill('FARM'),
+          h('span', { class: 'muted', text: 'Net ' + money(item.econ.net) }),
+          h('span', { class: 'muted', text: money(item.econ.perHour) + '/hour' }),
+          h('span', { class: 'muted', text: planLine(item.row, DEFAULT_DEP) }),
         ]);
-      })),
+      });
+    return h('section', { class: 'next' }, [
+      h('h2', { text: 'Farm next' }),
+      h('div', { class: 'next-row' }, cards),
     ]);
   }
 
@@ -359,15 +401,62 @@
 
   function filteredRows() {
     var q = state.q.trim().toLowerCase();
-    return DATA.rows.filter(function (row) {
+    var list = DATA.rows.filter(function (row) {
+      if (state.watch && !row.watchlist) return false;
       if (state.category && row.category !== state.category) return false;
       if (state.verdict) {
         var econ = economics(row, depositOf(row));
         if (verdictOf(econ.net, econ.perHour) !== state.verdict) return false;
       }
       if (!q) return true;
-      return (row.name + ' ' + row.category).toLowerCase().indexOf(q) !== -1;
+      return (row.name + ' ' + row.category + ' ' + row.primary_chain).toLowerCase().indexOf(q) !== -1;
     });
+    var key = state.sort.key;
+    var dir = state.sort.dir;
+    list.sort(function (a, b) {
+      var ea = economics(a, depositOf(a));
+      var eb = economics(b, depositOf(b));
+      var va;
+      var vb;
+      if (key === 'rank') { va = a.rank; vb = b.rank; }
+      else if (key === 'tvl') { va = a.tvl_usd; vb = b.tvl_usd; }
+      else if (key === 'change') { va = a.change_7d === null ? -1e18 : a.change_7d; vb = b.change_7d === null ? -1e18 : b.change_7d; }
+      else if (key === 'age') { va = a.age_days === null ? -1 : a.age_days; vb = b.age_days === null ? -1 : b.age_days; }
+      else if (key === 'odds') { va = a.p_token; vb = b.p_token; }
+      else if (key === 'launch') { va = a.launch_value_usd; vb = b.launch_value_usd; }
+      else if (key === 'implied') { va = a.implied_value_usd; vb = b.implied_value_usd; }
+      else if (key === 'net') { va = ea.net; vb = eb.net; }
+      else if (key === 'hour') { va = ea.perHour; vb = eb.perHour; }
+      else { va = a.rank; vb = b.rank; }
+      if (va !== vb) return va < vb ? -dir : dir;
+      return a.rank - b.rank;
+    });
+    return list;
+  }
+
+  function sortHead(label, key, numeric) {
+    var on = state.sort.key === key;
+    var arrow = on ? (state.sort.dir === 1 ? ' ↑' : ' ↓') : '';
+    return h('th', { class: (numeric ? 'num' : '') + (on ? ' sorted' : '') }, [
+      h('button', {
+        type: 'button',
+        class: 'th-sort',
+        'aria-sort': on ? (state.sort.dir === 1 ? 'ascending' : 'descending') : 'none',
+        text: label + arrow,
+        onclick: function () {
+          if (state.sort.key === key) state.sort.dir = -state.sort.dir;
+          else { state.sort.key = key; state.sort.dir = key === 'rank' ? 1 : -1; }
+          render();
+        },
+      }),
+    ]);
+  }
+
+  function toggleCompare(slug) {
+    var i = state.compare.indexOf(slug);
+    if (i >= 0) state.compare.splice(i, 1);
+    else if (state.compare.length < 3) state.compare.push(slug);
+    render();
   }
 
   function controls(shown) {
@@ -377,6 +466,12 @@
     categories.sort();
     var deps = [['plan', 'Plan size'], ['1000', '$1k'], ['10000', '$10k']];
     var shares = [[0.035, '3.5%'], [0.07, '7%'], [0.14, '14%']];
+    var chips = [];
+    if (state.q.trim()) chips.push(h('button', { type: 'button', class: 'chip', text: 'Search ' + state.q.trim() + ' ×', onclick: function () { state.q = ''; render(); } }));
+    if (state.watch) chips.push(h('button', { type: 'button', class: 'chip', text: 'Watchlist ×', onclick: function () { state.watch = false; render(); } }));
+    if (state.category) chips.push(h('button', { type: 'button', class: 'chip', text: state.category + ' ×', onclick: function () { state.category = ''; render(); } }));
+    if (state.verdict) chips.push(h('button', { type: 'button', class: 'chip', text: state.verdict + ' ×', onclick: function () { state.verdict = ''; render(); } }));
+    if (chips.length) chips.push(h('button', { type: 'button', class: 'chip', text: 'Clear', onclick: function () { state.q = ''; state.watch = false; state.category = ''; state.verdict = ''; render(); } }));
     return h('div', { class: 'controls' }, [
       h('div', { class: 'seg' }, deps.map(function (item) {
         return h('button', { type: 'button', 'data-dep': item[0], 'aria-pressed': String(state.deposit) === item[0] ? 'true' : 'false', text: item[1], onclick: function () { state.deposit = item[0]; render(); } });
@@ -384,27 +479,82 @@
       h('div', { class: 'seg' }, shares.map(function (item) {
         return h('button', { type: 'button', 'data-share': String(item[0]), 'aria-pressed': state.share === item[0] ? 'true' : 'false', text: item[1], onclick: function () { state.share = item[0]; render(); } });
       })),
+      h('input', { id: 'q', type: 'search', placeholder: 'Search name, category, chain', value: state.q, oninput: function (ev) { state.q = ev.target.value; render(); } }),
+      h('label', { class: 'toggle' }, [
+        h('input', { id: 'watch', type: 'checkbox', checked: state.watch ? 'checked' : null, onchange: function (ev) { state.watch = ev.target.checked; render(); } }),
+        ' Watchlist only',
+      ]),
       h('select', { id: 'category', onchange: function (ev) { state.category = ev.target.value; render(); } }, [h('option', { value: '', text: 'All categories' })].concat(categories.map(function (c) {
         return h('option', { value: c, text: c, selected: c === state.category ? 'selected' : null });
       }))),
       h('select', { id: 'verdict', onchange: function (ev) { state.verdict = ev.target.value; render(); } }, ['', 'FARM', 'MARGINAL', 'SKIP'].map(function (v) {
         return h('option', { value: v, text: v || 'All verdicts', selected: v === state.verdict ? 'selected' : null });
       })),
-      state.category ? h('button', { type: 'button', class: 'chip', text: state.category + ' ×', onclick: function () { state.category = ''; render(); } }) : null,
-      state.verdict ? h('button', { type: 'button', class: 'chip', text: state.verdict + ' ×', onclick: function () { state.verdict = ''; render(); } }) : null,
-      h('span', { class: 'shown', text: shown + ' of ' + DATA.rows.length }),
+    ].concat(chips).concat([h('span', { class: 'shown', text: shown + ' of ' + DATA.rows.length })]));
+  }
+
+  function compareTray() {
+    if (state.compare.length === 0) return null;
+    var cols = state.compare.map(function (slug) {
+      var row = null;
+      for (var i = 0; i < DATA.rows.length; i += 1) if (DATA.rows[i].slug === slug) row = DATA.rows[i];
+      return row;
+    }).filter(Boolean);
+    var fields = [
+      ['TVL', function (row) { return money(row.tvl_usd); }],
+      ['7D', function (row) { return row.change_7d === null ? '—' : (row.change_7d > 0 ? '+' : '') + row.change_7d.toFixed(1) + '%'; }],
+      ['Age', function (row) { return ageText(row.age_days); }],
+      ['Odds', function (row) { return pct(row.p_token); }],
+      ['If it launches', function (row) { return money(row.launch_value_usd); }],
+      ['Implied value', function (row) { return money(row.implied_value_usd); }],
+      ['Verdict', function (row) {
+        var econ = economics(row, depositOf(row));
+        return verdictOf(econ.net, econ.perHour);
+      }],
+      ['Net', function (row) { return money(economics(row, depositOf(row)).net); }],
+      ['Net/hour', function (row) { return money(economics(row, depositOf(row)).perHour); }],
+      ['Plan', function (row) { return planLine(row, depositOf(row)); }],
+    ];
+    return h('section', { class: 'compare', id: 'compare' }, [
+      h('h2', { text: 'Compare ' + cols.length }),
+      h('table', { class: 'cmp' }, [
+        h('thead', null, [h('tr', null, [h('th', { text: '' })].concat(cols.map(function (row) {
+          return h('th', null, [h('button', { type: 'button', class: 'name-btn', text: row.name, onclick: function () { go(row.slug); } })]);
+        })))]),
+        h('tbody', null, fields.map(function (field) {
+          return h('tr', null, [h('th', { text: field[0] })].concat(cols.map(function (row) {
+            if (field[0] === 'Verdict') {
+              var econ = economics(row, depositOf(row));
+              var v = verdictOf(econ.net, econ.perHour);
+              return h('td', null, [pill(v)]);
+            }
+            return h('td', { class: 'num', text: field[1](row) });
+          })));
+        })),
+      ]),
     ]);
   }
 
   function board() {
     var rows = filteredRows();
+    var tally = liveTally(DATA.rows);
     var body = [];
     rows.forEach(function (row) {
       var dep = depositOf(row);
       var econ = economics(row, dep);
       var verdict = verdictOf(econ.net, econ.perHour);
       var change = row.change_7d === null ? '—' : (row.change_7d > 0 ? '+' : '') + row.change_7d.toFixed(1) + '%';
-      body.push(h('tr', null, [
+      var checked = state.compare.indexOf(row.slug) >= 0;
+      body.push(h('tr', { class: 'row' + (checked ? ' picked' : '') }, [
+        h('td', { class: 'pick' }, [
+          h('input', {
+            type: 'checkbox',
+            'aria-label': 'Compare ' + row.name,
+            checked: checked ? 'checked' : null,
+            disabled: !checked && state.compare.length >= 3 ? 'disabled' : null,
+            onchange: function () { toggleCompare(row.slug); },
+          }),
+        ]),
         h('td', { class: 'num' }, [h('div', { text: String(row.rank) }), h('div', { class: 'band', text: row.rank_lo + '–' + row.rank_hi })]),
         h('td', null, [
           h('button', { type: 'button', class: 'name-btn', text: row.name, onclick: function () { go(row.slug); } }),
@@ -420,25 +570,38 @@
           rangeBar(row),
           h('div', { class: 'band', text: money(row.low_value_usd) + ' – ' + money(row.high_value_usd) }),
         ]),
-        h('td', null, [pill(verdict), h('div', { class: 'band', text: money(econ.net) })]),
+        h('td', { class: 'verdict' }, [pill(verdict), h('div', { class: 'band', text: money(econ.net) })]),
         h('td', { class: 'num', text: money(econ.perHour) }),
-        h('td', null, [
-          h('div', { text: money(dep) + ' · ' + row.hold_days + ' d · ' + row.farm_steps.length + ' steps' }),
+        h('td', { class: 'plan' }, [
+          h('div', { text: planLine(row, dep) }),
           h('button', { type: 'button', class: 'expand', text: state.open === row.slug ? 'Hide steps' : 'Steps', onclick: function () { state.open = state.open === row.slug ? '' : row.slug; render(); } }),
         ]),
       ]));
       if (state.open === row.slug) {
-        body.push(h('tr', { class: 'expanded' }, [h('td', { colspan: '11' }, [stepList(row, dep)])]));
+        body.push(h('tr', { class: 'expanded' }, [h('td', { colspan: '12' }, [stepList(row, dep)])]));
       }
     });
+    var emptyWhy = 'No row matches these filters. Clear a chip or widen the search.';
     return h('div', { id: 'main' }, [
       farmNext(),
       controls(rows.length),
-      rows.length === 0 ? h('p', { class: 'empty', text: 'Nothing matches this filter.' }) : h('table', null, [
-        h('thead', null, [h('tr', null, ['Rank', 'Protocol', 'TVL', '7D', 'No-token age', 'Odds', 'If it launches', 'Implied value', 'Verdict', 'Net/hour', 'Plan'].map(function (label, i) {
-          var numeric = i === 0 || i === 2 || i === 3 || i === 4 || i === 6 || i === 7 || i === 9;
-          return h('th', { class: numeric ? 'num' : '', text: label });
-        }))]),
+      h('p', { class: 'tally', text: 'FARM ' + tally.FARM + ' · MARGINAL ' + tally.MARGINAL + ' · SKIP ' + tally.SKIP }),
+      compareTray(),
+      rows.length === 0 ? h('p', { class: 'empty', text: emptyWhy }) : h('table', { class: 'board' }, [
+        h('thead', null, [h('tr', null, [
+          h('th', { class: 'pick', text: '' }),
+          sortHead('Rank', 'rank', true),
+          h('th', { text: 'Protocol' }),
+          sortHead('TVL', 'tvl', true),
+          sortHead('7D', 'change', true),
+          sortHead('No-token age', 'age', true),
+          sortHead('Odds', 'odds', true),
+          sortHead('If it launches', 'launch', true),
+          sortHead('Implied value', 'implied', true),
+          sortHead('Verdict', 'net', true),
+          sortHead('Net/hour', 'hour', true),
+          h('th', { text: 'Plan' }),
+        ])]),
         h('tbody', null, body),
       ]),
     ]);
@@ -509,7 +672,7 @@
         ]),
         h('section', { class: 'panel' }, [
           h('h3', { text: 'Verdict at this deposit and drop share' }),
-          h('p', { class: 'muted', text: money(dep) + ' deposit · ' + pct(state.share) + ' drop share · ' + verdict }),
+          h('p', { class: 'muted' }, [money(dep) + ' deposit · ' + pct(state.share) + ' drop share · ', pill(verdict)]),
           h('table', { class: 'grid3' }, [
             h('thead', null, [h('tr', null, [h('th', { text: 'Drop share' }), h('th', { text: 'Plan ' + money(row.deposit_usd) }), h('th', { text: '$1k' }), h('th', { text: '$10k' })])]),
             h('tbody', null, gridRows),
@@ -584,6 +747,33 @@
     return se('svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'Log market cap against log TVL, fitted line and residual band' }, kids);
   }
 
+  function comps() {
+    var q = state.q.trim().toLowerCase();
+    var rows = DATA.comparables.filter(function (c) {
+      if (!q) return true;
+      return (c.name + ' ' + c.category + ' ' + (c.symbol || '')).toLowerCase().indexOf(q) !== -1;
+    });
+    var body = rows.slice(0, 80).map(function (c) {
+      return h('tr', { class: 'row' }, [
+        h('td', { text: c.name }),
+        h('td', { text: c.category }),
+        h('td', { class: 'num', text: money(c.mcap_usd) }),
+        h('td', { class: 'num', text: money(c.tvl_usd) }),
+        h('td', { class: 'num', text: times(c.mcap_tvl) }),
+      ]);
+    });
+    return h('div', { id: 'main' }, [
+      h('p', { class: 'muted', text: 'Tokens that already trade. Used as comparables, not ranked.' }),
+      h('input', { id: 'q', type: 'search', placeholder: 'Search traded tokens', value: state.q, oninput: function (ev) { state.q = ev.target.value; render(); } }),
+      rows.length === 0
+        ? h('p', { class: 'empty', text: 'No traded token matches this search. Clear the box to list comparables.' })
+        : h('table', { class: 'board comps' }, [
+          h('thead', null, [h('tr', null, [h('th', { text: 'Protocol' }), h('th', { text: 'Category' }), h('th', { class: 'num', text: 'Market cap' }), h('th', { class: 'num', text: 'TVL' }), h('th', { class: 'num', text: 'Mcap/TVL' })])]),
+          h('tbody', null, body),
+        ]),
+    ]);
+  }
+
   function evidence() {
     return h('div', { id: 'main' }, [
       h('section', { class: 'chart-card' }, [
@@ -596,14 +786,30 @@
   }
 
   function render() {
+    var active = document.activeElement;
+    var keepId = active && active.id ? active.id : '';
+    var keepPos = (active && typeof active.selectionStart === 'number') ? active.selectionStart : null;
     var slug = detailSlug();
     var hash = currentHash();
     var row = null;
     if (slug) {
       for (var i = 0; i < DATA.rows.length; i += 1) if (DATA.rows[i].slug === slug) row = DATA.rows[i];
     }
-    var body = row ? detail(row) : hash === 'evidence' ? evidence() : h('div', null, [stats(), formulaLine(), ledger(), termTable(), integrity(), board()]);
-    app.replaceChildren(h('div', { class: 'wrap' }, [header(), tabs(), body]));
+    var page;
+    if (row) page = detail(row);
+    else if (hash === 'evidence') page = evidence();
+    else if (hash === 'comps') page = comps();
+    else page = h('div', null, [stats(), formulaLine(), ledger(), termTable(), integrity(), board()]);
+    var y = window.scrollY;
+    app.replaceChildren(h('div', { class: 'wrap' }, [header(), tabs(), page]));
+    window.scrollTo(0, y);
+    if (keepId) {
+      var el = document.getElementById(keepId);
+      if (el && typeof el.focus === 'function') {
+        el.focus();
+        if (keepPos !== null && el.setSelectionRange) el.setSelectionRange(keepPos, keepPos);
+      }
+    }
   }
 
   window.addEventListener('hashchange', render);

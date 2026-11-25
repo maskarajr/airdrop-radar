@@ -13,6 +13,7 @@ export type { Snapshot, SnapshotProtocol } from './types.ts';
 export { parseSnapshot, SnapshotError } from './types.ts';
 
 export const MODEL_VERSION = 'heldout-2';
+// Default-view deposit is a page control. implied_value_usd and rank stay this fit.
 
 export const MIN_CATEGORY_SAMPLE = 5;
 export const GROWTH_FLOOR = -30;

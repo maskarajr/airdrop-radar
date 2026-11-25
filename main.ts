@@ -90,5 +90,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: default view $${radar.default_deposit_usd} FARM ${radar.view_verdicts.FARM} MARGINAL ${radar.view_verdicts.MARGINAL} SKIP ${radar.view_verdicts.SKIP}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
